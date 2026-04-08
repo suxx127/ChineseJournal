@@ -44,8 +44,8 @@ def args_parser():
     parser.add_argument('--max_length', type=int, default=256, help='max_length for data')
 
     # LoRa configuration
-    parser.add_argument('--lora_alpha', type=int, default=32, help='scaling factors for LoRa')
-    parser.add_argument('--lora_rank', type=int, default=16, help='rank of matrices in LoRa')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='scaling factors for LoRa')
+    parser.add_argument('--lora_rank', type=int, default=8, help='rank of matrices in LoRa')
 
     # Compress configuration
     parser.add_argument('--packet_num', type=int, default=360, help='number of packet in each communication round')
@@ -69,6 +69,8 @@ def args_parser():
     parser.add_argument('--quan', type=int, default=0, help='')
     parser.add_argument('--factor', type=float, default=1, help='')
     parser.add_argument('--weight', type=float, default=0.02, help='')
+    parser.add_argument('--pmax', type=float, default=0.6, help='')
+    parser.add_argument('--pmin', type=float, default=0.5, help='')
 
     # Computation configuration
     # parser.add_argument('--device', type=str, default='2', help='the device to run the program')

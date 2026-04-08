@@ -8,6 +8,7 @@ import time
 from model_utils import get_model_path, get_automodel, get_untrain_part, set_requires_grad, safe_replace_lora_layers
 from torch import nn
 from torch.nn.utils import prune
+import random
 
 from task import Task
 from fedcomp import Fedcomp
@@ -193,6 +194,7 @@ class Fed_trainer(object):
 
     def run(self):
         print("configaration is ", self.args)
+        proportions = [random.uniform(self.args.pmin, self.args.pmax) for _ in range(self.args.num_client)]
         tokenizer = get_model_tokenizer(model=self.args.model, max_length=self.args.max_length)
         data, partition_map, num_labels, metric, validation_key, \
             task, label_names, validation_dataset, grids = get_fed_data_info(args=self.args, tokenizer=tokenizer)
@@ -258,7 +260,7 @@ class Fed_trainer(object):
                 local_model = self.train(data=data, data_indices=partition_map[client],
                                         model=copy.deepcopy(local_model),
                                         tokenizer=tokenizer, task=task, client_idx=i,
-                                        update_proportion=self.args.update_proportion)
+                                        update_proportion=proportions[client])
                 # for layer in local_model.state_dict():
                 #     if 'lora_B' in layer:
                 #         row_sums = torch.sum(torch.abs(local_model.state_dict()[layer]), dim=1)  
@@ -270,8 +272,8 @@ class Fed_trainer(object):
                 #         is_zero_column = torch.eq(column_sums, 0.0)
                 #         zero_column_count = torch.sum(is_zero_column).item()  # item()转为Python整数
                 #         print("the count of zero column is ", zero_column_count)
-                # if rnd == 0 and client == cohorts[0]:
-                #     self.copy_model_expect_lora(local_model)
+                if rnd == 0 and client == cohorts[0]:
+                    self.copy_model_expect_lora(local_model)
                 grad, param, name_grad, name_param, name_paramlast = self.get_grad(local_model)
                 if self.args.method in ['fedcomp', 'smartidx']:
                     fedcomp = Fedcomp(args=self.args)
@@ -369,8 +371,8 @@ class Fed_trainer(object):
                     tmp_mask = self.name_mask[name]
                     prune.CustomFromMask.apply(module, 'weight', tmp_mask)
         
-        if self.args.method == 'new1':
-            model = safe_replace_lora_layers(model, client_idx, update_proportion)
+        if self.args.method == 'new1' or self.args.method == 'motivation':
+            model = safe_replace_lora_layers(model, update_proportion)
         model.train()
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize

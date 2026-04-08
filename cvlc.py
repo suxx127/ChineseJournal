@@ -38,9 +38,7 @@ class Fed_cvlc(object):
 
     def do_compress(self, grad: torch.tensor, param: torch.tensor, name_grad, name_param, proportion, rnd):
         method = self.args.method
-        if method == 'raw' or method == 'new1':
-            return grad
-        elif method == 'cvlc':
+        if method == 'cvlc':
             self.d = self.trainable_parameters
             self.s = math.ceil(math.log(self.d, 2))
             self.packet_min = int(self.packet_size / (self.max_bit + self.s))
@@ -142,7 +140,8 @@ class Fed_cvlc(object):
                     file.write(str(item) + '\n')
             # exit(0)
         else:
-            exit('No method {} erro in do_compress'.format(method))
+            return grad
+            # exit('No method {} erro in do_compress'.format(method))
         return grad
 
     

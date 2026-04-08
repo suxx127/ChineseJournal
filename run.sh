@@ -1,11 +1,25 @@
+nohup python -u main_.py --label --partition --model distilbert-base-multilingual-cased --method motivation --GPU 0 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_motivation_w.out 2>&1 &
+nohup python -u main_.py --label --partition --model distilbert-base-multilingual-cased --method motivation --GPU 1 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 --pmax 0.7 --pmin 0.6 > result/distilbert_20news_iid_motivation_s.out 2>&1 &
+nohup python -u main_.py --label --partition --method motivation --GPU 0 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/roberta_20news_iid_motivation_w.out 2>&1 &
+nohup python -u main_.py --label --partition --method motivation --GPU 1 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 --pmax 0.7 --pmin 0.6 > result/roberta_20news_iid_motivation_s.out 2>&1 &
+
+
 nohup python -u main_.py --label --partition --model distilbert-base-multilingual-cased --method raw --GPU 0 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_raw.out 2>&1 &
 nohup python -u main_.py --label --partition --model distilbert-base-multilingual-cased --method new1 --GPU 0 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_new.out 2>&1 &
+# 行和列均匀冻结
 nohup python -u main_.py --label --partition --update_proportion 0.5 --model distilbert-base-multilingual-cased --method new1 --GPU 1 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_new5.out 2>&1 &
 nohup python -u main_.py --label --partition --update_proportion 0.6 --model distilbert-base-multilingual-cased --method new1 --GPU 2 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_new6.out 2>&1 &
 nohup python -u main_.py --label --partition --update_proportion 0.7 --model distilbert-base-multilingual-cased --method new1 --GPU 3 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_new7.out 2>&1 &
 nohup python -u main_.py --label --partition --update_proportion 0.8 --model distilbert-base-multilingual-cased --method new1 --GPU 4 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_new8.out 2>&1 &
 nohup python -u main_.py --label --partition --update_proportion 0.9 --model distilbert-base-multilingual-cased --method new1 --GPU 5 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_new9.out 2>&1 &
-# 调整lora矩阵B和A的冻结比例
+
+nohup python -u main_.py --label --partition --update_proportion 0.5 --model distilbert-base-multilingual-cased --method new1 --GPU 1 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_test5.out 2>&1 &
+nohup python -u main_.py --label --partition --update_proportion 0.6 --model distilbert-base-multilingual-cased --method new1 --GPU 2 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_test6.out 2>&1 &
+nohup python -u main_.py --label --partition --update_proportion 0.7 --model distilbert-base-multilingual-cased --method new1 --GPU 3 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_test7.out 2>&1 &
+nohup python -u main_.py --label --partition --update_proportion 0.8 --model distilbert-base-multilingual-cased --method new1 --GPU 4 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_test8.out 2>&1 &
+nohup python -u main_.py --label --partition --update_proportion 0.9 --model distilbert-base-multilingual-cased --method new1 --GPU 5 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_test9.out 2>&1 &
+
+# 只冻结行
 nohup python -u main_.py --label --partition --update_proportion 0.5 --model distilbert-base-multilingual-cased --method new1 --GPU 1 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_nnew5.out 2>&1 &
 nohup python -u main_.py --label --partition --update_proportion 0.6 --model distilbert-base-multilingual-cased --method new1 --GPU 2 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_nnew6.out 2>&1 &
 nohup python -u main_.py --label --partition --update_proportion 0.7 --model distilbert-base-multilingual-cased --method new1 --GPU 3 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_nnew7.out 2>&1 &

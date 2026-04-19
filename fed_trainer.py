@@ -37,6 +37,16 @@ class Fed_trainer(object):
         self.random_list = random_list
         self.accu_gra = None
         self.communication = 0
+        
+        # 时间统计相关
+        self.timing_stats = {}  # 从文件中读取的timing统计
+        self.client_timings = {}  # 记录每个客户端的耗时 {client_id: {'compute': xx, 'communication': xx}}
+        self.round_timings = []  # 记录每轮的总耗时
+        self.client_allocated_timings = {}  # 预分配的客户端信息 {client_id: {'forward_time': xx, 'backward_time': xx, 'upload_speed': xx, 'download_speed': xx}}
+        self.total_training_time = 0.0  # 到当前回合为止的总训练时间
+        
+        # HeLoRA 相关
+        self.client_ranks = {}  # 记录每个客户端的秩大小 {client_id: rank}
 
     def get_grad(self, model):
         grad = torch.tensor([])
@@ -175,11 +185,31 @@ class Fed_trainer(object):
     def aggregate(self, grad_dist: dict, cohorts: list, partition_map: dict):
         model_gra = torch.zeros_like(grad_dist[cohorts[0]])
         data_sum = 0
+        
+        # 计算权重总和
         for client in cohorts:
-            data_sum += len(partition_map[client])
+            data_size = len(partition_map[client])
+            
+            # 如果是 HeLoRA 方法，权重 = 数据量 * 秩数
+            if self.args.method == 'HeLoRA' and client in self.client_ranks:
+                weight = data_size * self.client_ranks[client]
+            else:
+                weight = data_size
+            
+            data_sum += weight
+        
+        # 聚合梯度
         for client in cohorts:
-            w = len(partition_map[client]) / data_sum
+            data_size = len(partition_map[client])
+            
+            # 如果是 HeLoRA 方法，权重 = 数据量 * 秩数
+            if self.args.method == 'HeLoRA' and client in self.client_ranks:
+                w = data_size * self.client_ranks[client] / data_sum
+            else:
+                w = data_size / data_sum
+            
             model_gra += (w * grad_dist[client])
+        
         return model_gra
 
     def set_data_collator(self, tokenizer, task):
@@ -194,21 +224,22 @@ class Fed_trainer(object):
 
     def run(self):
         print("configaration is ", self.args)
+        
+        # 固定随机种子，保证可重复性和不同算法的公平比较
+        random_seed = 42
+        random.seed(random_seed)
+        np.random.seed(random_seed)
+        torch.manual_seed(random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(random_seed)
+        
+        # 可训练的低秩矩阵比例
         proportions = [random.uniform(self.args.pmin, self.args.pmax) for _ in range(self.args.num_client)]
+        
         tokenizer = get_model_tokenizer(model=self.args.model, max_length=self.args.max_length)
         data, partition_map, num_labels, metric, validation_key, \
             task, label_names, validation_dataset, grids = get_fed_data_info(args=self.args, tokenizer=tokenizer)
         self.metric_trainer = Metrics_trainer(metric_name=metric, label_names=label_names, grids=grids)
-
-        if self.args.method == 'updateW':
-            if self.args.model == 'distilbert-base-multilingual-cased' or self.args.model == 'distilbert-base-cased':
-                self.target_modules = ["q_lin", "v_lin"]
-            elif self.args.model == 'roberta-large' or self.args.model == 'roberta-base':
-                self.target_modules = ["query", "value"]
-            elif self.args.model == 'llama-2-7B' or self.args.model == 'llama-3.2-1B':
-                self.target_modules = ["q_proj", "v_proj"]
-            else:
-                self.target_modules = ["q_proj", "v_proj"]
         self.gobal_model, trainable_parameters, self.untrain_part = get_model_lora(model=self.args.model, lora_alpha=self.args.lora_alpha,
                                                                 lora_rank=self.args.lora_rank, num_labels=num_labels,
                                                                 task=task, method=self.args.method)
@@ -224,113 +255,183 @@ class Fed_trainer(object):
             # if 'lora' in layer or any(part in layer for part in self.untrain_part):
             if 'lora' in layer:
                 print(layer)
-                num_param += self.gobal_model.state_dict()[layer].numel()
+                num_param += self.gobal_model.state_dict()[layer].numel() 
+        # 计算LoRA参数大小（字节）
+        lora_params_size = num_param * 4  # 假设float32，4字节/参数
+        print(f"LoRA参数大小: {lora_params_size / (1024**2):.2f} MB")
+
+        # 加载时间统计信息
+        self.load_timing_stats()
+        
+        # 为所有客户端预分配计算和通信时间（网速仅在此处生成一次）
+        self.allocate_client_timings(partition_map, lora_params_size)
+        
+        # 如果是 HeLoRA 方法，分配客户端秩大小（使用已分配好的网速）
+        if self.args.method == 'HeLoRA':
+            self.allocate_client_ranks_helora(partition_map, lora_params_size)
+                
         self.accu_gra = torch.zeros((self.args.num_client, num_param))
         self.set_data_collator(tokenizer=tokenizer, task=task)
         matrix = self.get_model_matrix_num()
-        traffic = int(self.args.proportion * trainable_parameters) * (32 + math.log2(trainable_parameters) + 1)
-        self.args.packet_num = int(traffic / 1500 / 8)
-        # self.args.packet_num = self.get_packet_num(layers=matrix)
-        print("the number of packet is ", self.args.packet_num)
         
         # coefficient_of_variation = []
         self.init_training_metric(metrics=metric)
         compress = Fed_cvlc(args=self.args, trainable_parameters=trainable_parameters, matrix_num=matrix)
-        residual_model = {}
-        if self.args.method == 'prune':
-            prune_propor = int(traffic / 32) / trainable_parameters
-            self.mask, self.name_mask = prune_lora_layers(self.gobal_model, self.untrain_part, keep_ratio=prune_propor)
-            print("the proportion of mask and prune_propor are ", 
-                  torch.count_nonzero(self.mask) / self.mask.numel(), prune_propor)
-
         # Train
         for rnd in range(self.args.comm_round):
             if self.accelerator.is_local_main_process:
                 print(f'ROUND:{rnd}')
+            # 初始化该轮的客户端耗时记录
+            round_client_timings = {}
             np.random.seed(self.random_list[rnd])
             cohorts = np.random.choice(self.args.num_client, int(self.args.num_client * self.args.sample_fraction),
                                     replace=False).tolist()
+            
+            # 如果是 FFTHM 方法，计算每个客户端的训练比例p以平衡时间
+            # 计算每个客户端的训练比例p
+            client_proportions = {}
+            if self.args.method == 'FFTHM':
+                # 计算每个选中客户端的原始总时间（p=1时）
+                client_times = {}
+                for client in cohorts:
+                    allocated = self.client_allocated_timings[client]
+                    forward = allocated['forward_time']
+                    backward = allocated['backward_time']
+                    upload_speed = allocated['upload_speed']
+                    download_speed = allocated['download_speed']
+                    # 估算传输字节数（简化使用lora_params_size）
+                    transmitted_bytes = lora_params_size
+                    upload_speed_bytes = upload_speed * 1024 * 1024 / 8
+                    download_speed_bytes = download_speed * 1024 * 1024 / 8
+                    upload_time = transmitted_bytes / upload_speed_bytes
+                    download_time = lora_params_size / download_speed_bytes
+                    total_time = forward + backward + upload_time + download_time
+                    client_times[client] = total_time
+                
+                # 找出资源最丰富的客户端（总时间最短）
+                richest_client = min(client_times, key=client_times.get)
+                T_max = client_times[richest_client]
+                
+                for client in cohorts:
+                    if client == richest_client:
+                        client_proportions[client] = 1.0
+                    else:
+                        forward = self.client_allocated_timings[client]['forward_time']
+                        backward = self.client_allocated_timings[client]['backward_time']
+                        upload_time = transmitted_bytes / (self.client_allocated_timings[client]['upload_speed'] * 1024 * 1024 / 8)
+                        download_time = lora_params_size / (self.client_allocated_timings[client]['download_speed'] * 1024 * 1024 / 8)
+                        denominator = backward + upload_time
+                        if denominator > 0:
+                            p = (T_max - forward - download_time) / denominator
+                            p = max(0.1, min(1.0, p))  # 限制在0.1到1.0之间
+                        else:
+                            p = 1.0
+                        client_proportions[client] = p
+            else:
+                for client in cohorts:
+                    client_proportions[client] = 1.0
+            
             grad_dist = {}
             for i, client in enumerate(cohorts):
                 self.accelerator.print(f'CLIENT:{client}')
                 local_model = copy.deepcopy(self.gobal_model)
-                if self.args.residual:
-                    if client in residual_model and residual_model[client] is not None:
-                        local_model = self.combine(residual_model[client], copy.deepcopy(local_model))
                 local_model = self.train(data=data, data_indices=partition_map[client],
                                         model=copy.deepcopy(local_model),
                                         tokenizer=tokenizer, task=task, client_idx=i,
-                                        update_proportion=proportions[client])
-                # for layer in local_model.state_dict():
-                #     if 'lora_B' in layer:
-                #         row_sums = torch.sum(torch.abs(local_model.state_dict()[layer]), dim=1)  
-                #         is_zero_row = torch.eq(row_sums, 0.0)
-                #         zero_row_count = torch.sum(is_zero_row).item()  # item()转为Python整数
-                #         print("the count of zero rows is ", zero_row_count)
-                #     elif 'lora_A' in layer:
-                #         column_sums = torch.sum(torch.abs(local_model.state_dict()[layer]), dim=0)  
-                #         is_zero_column = torch.eq(column_sums, 0.0)
-                #         zero_column_count = torch.sum(is_zero_column).item()  # item()转为Python整数
-                #         print("the count of zero column is ", zero_column_count)
+                                        update_proportion=client_proportions[client], client_id=client)
                 if rnd == 0 and client == cohorts[0]:
                     self.copy_model_expect_lora(local_model)
+                
+                allocated_timing = self.client_allocated_timings[client]
+                forward_time = allocated_timing['forward_time']
+                backward_time = allocated_timing['backward_time']
+                upload_speed = allocated_timing['upload_speed']
+                download_speed = allocated_timing['download_speed']
+
                 grad, param, name_grad, name_param, name_paramlast = self.get_grad(local_model)
-                if self.args.method in ['fedcomp', 'smartidx']:
-                    fedcomp = Fedcomp(args=self.args)
-                    grad_dist[client], res_model = fedcomp.fed_comp(self.gobal_model, local_model)
-                    if self.args.residual:
-                        residual_model[client] = res_model
-                # elif self.args.method == 'new':
-                #     grad_dist[client] = compress.new(name_param, proportion=self.args.proportion)
-                elif self.args.method == 'updateW':
-                    if rnd == 0 and i == 0:
-                        opt = True
-                    else:
-                        opt = False
-                    grad_dist[client] = compress.STopK(param, grad, name_param, name_grad, proportion=self.args.proportion, opt=opt, rnd=rnd)
-                # elif self.args.method == 'CGFedLLM':
-                #     grad_dist[client] = compress.CGFedLLM(name_grad, autoencoderA, autoencoderB, meanA, stdA, meanB, stdB)
-                elif self.args.method == 'compeft':
-                    grad += self.accu_gra[client]
-                    grad_dist[client] = compress.compeft(self.args.proportion, name_grad, grad)
-                    self.accu_gra[client] = grad - grad_dist[client]
-                elif self.args.method == 'prune':
-                    # mask = prune_lora_layers(self.gobal_model, self.untrain_part, keep_ratio=self.args.proportion * 2)
-                    # grad_dist[client] = compress.prune(grad, self.mask)
-                    grad_dist[client] = grad
-                    print("the proportion of non-zeros is ", torch.count_nonzero(grad) / grad.numel())
-                    # if rnd <= 1:
-                    #     grad_dist[client] = compress.topk_AB(self.args.proportion, name_grad, grad)
-                    # else:
-                    #     mask = prune_lora_layers(self.gobal_model, self.untrain_part, keep_ratio=self.args.proportion * 2)
-                    #     grad_dist[client] = compress.prune(grad, mask)
+                if self.args.method == 'pq':
+                    grad_dist[client] = compress.do_compress(grad, param, name_grad, name_paramlast, proportion=self.args.proportion, rnd=rnd)
                 else:
                     grad += self.accu_gra[client]
                     grad_dist[client] = compress.do_compress(grad, param, name_grad, name_paramlast, proportion=self.args.proportion, rnd=rnd)
                     self.accu_gra[client] = grad - grad_dist[client]
-            grad = self.aggregate(grad_dist=grad_dist, cohorts=cohorts, partition_map=partition_map)
-            if self.args.method == 'updateW':
-                self.gobal_grad = grad
-                if (rnd + 1) < self.args.point:
-                # if (rnd + 1) % self.args.point != 0:
-                    self.gobal_model = self.updateW(grad)
-                else:
-                    self.gobal_model = self.combine(grad)
                 
-                # gobal_model = self.updateW(grad)
-                # self.gobal_model, trainable_parameters = get_model_lora(model=self.args.model, lora_alpha=self.args.lora_alpha,
-                #                                                 lora_rank=self.args.lora_rank, num_labels=num_labels,
-                #                                                 task=task)
-                # state_dict = self.gobal_model.state_dict()
-                # for key, _ in state_dict.items():
-                #     if key.find('lora') == -1:
-                #         state_dict[key] = gobal_model[key]
-                #         state_dict[key].requires_grad = False
-                #         # state_dict[key] = torch.zeros_like(state_dict[key])
-                # self.gobal_model.load_state_dict(state_dict)
-            else:
-                self.gobal_grad = grad
-                self.gobal_model = self.combine(grad)
+                # 估算本轮传输的数据量并计算通信时间
+                transmitted_bytes = self.estimate_transmitted_bytes(grad_dist[client], lora_params_size)
+                download_bytes = lora_params_size
+                upload_speed_bytes_per_sec = upload_speed * 1024 * 1024 / 8
+                download_speed_bytes_per_sec = download_speed * 1024 * 1024 / 8
+                upload_time = transmitted_bytes / upload_speed_bytes_per_sec
+                download_time = download_bytes / download_speed_bytes_per_sec
+                
+                # 如果是 FFTHM 方法，按训练比例p缩放反向传播时间和上传时间
+                if self.args.method == 'FFTHM':
+                    p = client_proportions[client]
+                    backward_time_scaled = backward_time * p
+                    upload_time_scaled = upload_time * p
+                    download_time_scaled = download_time  # 下载时间不变
+                else:
+                    backward_time_scaled = backward_time
+                    upload_time_scaled = upload_time
+                    download_time_scaled = download_time
+                
+                # 如果是 HeLoRA 方法，额外按客户端秩数/原始秩数的比例缩放时间
+                if self.args.method == 'HeLoRA':
+                    rank_ratio = self.client_ranks.get(client, self.args.lora_rank) / self.args.lora_rank
+                    backward_time_scaled *= rank_ratio
+                    upload_time_scaled *= rank_ratio
+                    download_time_scaled *= rank_ratio
+                
+                communication_time = upload_time_scaled + download_time_scaled
+                total_client_time = forward_time + backward_time_scaled + communication_time
+                
+                round_client_timings[client] = {
+                    'forward_time': forward_time,
+                    'backward_time': backward_time_scaled,
+                    'communication_time': communication_time,
+                    'total_time': total_client_time,
+                    'upload_speed': upload_speed,
+                    'download_speed': download_speed,
+                    'upload_bytes': transmitted_bytes,
+                    'download_bytes': download_bytes
+                }
+                
+                print(f'  Client {client} 前向耗时: {forward_time:.4f}s, '
+                      f'反向耗时: {backward_time:.4f}s, '
+                      f'通信耗时: {communication_time:.4f}s, '
+                      f'(上传速率: {upload_speed:.2f}Mbps, 下载速率: {download_speed:.2f}Mbps)')
+            grad = self.aggregate(grad_dist=grad_dist, cohorts=cohorts, partition_map=partition_map)
+            
+            # 计算该轮的最大耗时（联邦学习中的瓶颈）
+            if round_client_timings:
+                max_forward_time = max([t['forward_time'] for t in round_client_timings.values()])
+                max_backward_time = max([t['backward_time'] for t in round_client_timings.values()])
+                max_communication_time = max([t['communication_time'] for t in round_client_timings.values()])
+                max_total_time = max([t['total_time'] for t in round_client_timings.values()])
+                max_client = max(round_client_timings.items(), key=lambda x: x[1]['total_time'])[0]
+                
+                self.round_timings.append({
+                    'round': rnd,
+                    'max_forward_time': max_forward_time,
+                    'max_backward_time': max_backward_time,
+                    'max_communication_time': max_communication_time,
+                    'max_total_time': max_total_time,
+                    'bottleneck_client': max_client
+                })
+                
+                # 累加到总训练时间
+                self.total_training_time += max_total_time
+                
+                print(f"\n[轮次 {rnd} 时间统计]")
+                print(f"  最大前向耗时: {max_forward_time:.4f}s")
+                print(f"  最大反向耗时: {max_backward_time:.4f}s")
+                print(f"  最大通信耗时: {max_communication_time:.4f}s")
+                print(f"  本轮总耗时: {max_total_time:.4f}s (瓶颈客户端: {max_client})")
+                print(f"  累计训练时间: {self.total_training_time:.4f}s")
+                print()
+            
+            self.gobal_grad = grad
+            self.gobal_model = self.combine(grad)
             result, predictions = self.test_metric(data=data, tokenizer=tokenizer,
                                                 validation_key=validation_key, task=task)
             
@@ -353,40 +454,33 @@ class Fed_trainer(object):
                 if "accuracy" in metric and result['eval_acc'] >= 0.6:
                     print(f"Stopping training as accuracy has reached {result['eval_acc']} after {rnd + 1} rounds.")
                     break
-        # if self.accelerator.is_local_main_process:
-        #     if self.args.save_model:
-        #         self.save_model()
-        #     if self.args.save_metric:
-        #         self.save_metric(metrics=metric)
-        # with open('./save/cov_72.txt', 'w') as file:
-        #     # 遍历列表中的每个元素，并将其转换为字符串后写入文件
-        #     for item in coefficient_of_variation:
-        #         file.write(str(item) + '\n')
+        
+        # # 保存和打印时间统计结果
+        # self.save_round_timings()
+        
         return
 
-    def train(self, data, data_indices, model, tokenizer, task, client_idx, update_proportion):
-        if self.args.method == 'prune':
-            for name, module in model.named_modules():
-                if isinstance(module, nn.Linear) and 'lora' in name:
-                    tmp_mask = self.name_mask[name]
-                    prune.CustomFromMask.apply(module, 'weight', tmp_mask)
-        
-        if self.args.method == 'new1' or self.args.method == 'motivation':
+    def train(self, data, data_indices, model, tokenizer, task, client_idx, update_proportion, client_id=None):
+        # 用于对低秩矩阵进行冻结
+        if self.args.method == 'FFTHM':
             model = safe_replace_lora_layers(model, update_proportion)
+        
+        # 如果是 HeLoRA 方法，执行秩截断
+        if self.args.method == 'HeLoRA' and client_id is not None:
+            target_rank = self.client_ranks.get(client_id, self.args.lora_rank)
+            if target_rank < self.args.lora_rank:
+                model = self.truncate_lora_rank(model, target_rank, client_id)
+        
         model.train()
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize
-        # optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr)
-        lr = self.args.lr
-        weight = self.args.weight
-        # optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr, weight_decay=weight, betas=(0.9, 0.999), amsgrad=True)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
+        optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=0.9)
         if task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
             training_args = TrainingArguments(output_dir='./save/model', save_steps=save_steps,
                                             #   save_strategy='epoch',
                                               num_train_epochs=self.args.epochs,
                                               per_device_train_batch_size=self.args.batch_size, do_train=True,
-                                              learning_rate=lr,
+                                              learning_rate=self.args.lr,
                                               ddp_find_unused_parameters=False,
                                               lr_scheduler_type="constant",
                                               logging_steps=1)
@@ -415,6 +509,11 @@ class Fed_trainer(object):
                 optimizers=(optimizer, None)
             )
         trainer.train()
+        
+        # 如果是 HeLoRA 方法，恢复被截断的 LoRA 矩阵
+        if self.args.method == 'HeLoRA' and client_id is not None:
+            model = self.fill_truncated_lora(model, client_id)
+        
         model.cpu()
         return model
 
@@ -588,7 +687,348 @@ class Fed_trainer(object):
         for name, param in self.gobal_model.named_parameters():
             if 'lora' not in name:
                 param.requires_grad = False
+    
+    def load_timing_stats(self):
+        """从timing_analyzer.py生成的文件中读取时间统计"""
+        timing_file = f'timing_results_{self.args.model}_{self.args.dataset}.txt'
+        try:
+            with open(timing_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                for i, line in enumerate(lines):
+                    if '平均时间/批次' in line and '前向传播' in lines[i-2]:
+                        # 提取前向传播平均时间 (ms)
+                        forward_time_str = line.split(':')[1].strip().split(' ')[0]
+                        self.timing_stats['avg_forward_time'] = float(forward_time_str) / 1000  # 转为秒
+                    elif '平均时间/批次' in line and '反向更新' in lines[i-2]:
+                        # 提取反向更新平均时间 (ms)
+                        backward_time_str = line.split(':')[1].strip().split(' ')[0]
+                        self.timing_stats['avg_backward_time'] = float(backward_time_str) / 1000  # 转为秒
+            print(f"已从 {timing_file} 加载时间统计")
+        except FileNotFoundError:
+            print(f"警告: 找不到 {timing_file}，使用默认值")
+            self.timing_stats['avg_forward_time'] = 0.01  # 默认10ms
+            self.timing_stats['avg_backward_time'] = 0.01  # 默认10ms
+    
+    def allocate_client_ranks_helora(self, partition_map, lora_params_size):
+        """为 HeLoRA 方法分配客户端秩大小
+        根据客户端的计算和通信资源分为三个档次：
+        - 第一档次：秩 = lora_rank（计算+通信资源最优）
+        - 第二档次：秩 = lora_rank / 2
+        - 第三档次：秩 = lora_rank / 4（计算+通信资源最受限）
+        
+        注意：此函数应该在 allocate_client_timings 之后调用，
+              以便使用已分配好的网速和计算时间
+        """
+        if self.args.method != 'HeLoRA':
+            return
+        
+        print("\n" + "="*80)
+        print("HeLoRA 秩分配（按计算+通信资源）")
+        print("="*80)
+        
+        # 计算每个客户端的总资源得分（计算+通信）
+        client_scores = []
+        for client_id in range(self.args.num_client):
+            # 获取已分配的计算时间和网速
+            allocated_timing = self.client_allocated_timings[client_id]
+            forward_time = allocated_timing['forward_time']
+            backward_time = allocated_timing['backward_time']
+            upload_speed = allocated_timing['upload_speed']
+            download_speed = allocated_timing['download_speed']
+            
+            compute_score = forward_time + backward_time
+            
+            # 根据已分配的网速计算通信耗时
+            upload_speed_bytes_per_sec = upload_speed * 1_000_000 / 8
+            download_speed_bytes_per_sec = download_speed * 1_000_000 / 8
+            
+            upload_time = lora_params_size / upload_speed_bytes_per_sec
+            download_time = lora_params_size / download_speed_bytes_per_sec
+            communication_score = upload_time + download_time
+            
+            # 总资源得分 = 计算耗时 + 通信耗时
+            total_score = compute_score + communication_score
+            client_scores.append((client_id, total_score, compute_score, communication_score))
+        
+        # 按资源得分排序（从小到大，得分越小资源越好）
+        client_scores.sort(key=lambda x: x[1])
+        
+        num_clients = len(client_scores)
+        tier1_size = num_clients // 3
+        tier2_size = num_clients // 3
+        tier3_size = num_clients - tier1_size - tier2_size
+        
+        self.client_ranks = {}
+        
+        # 第一档次（资源最优）：秩 = lora_rank
+        for i in range(tier1_size):
+            client_id, total_score, compute_score, communication_score = client_scores[i]
+            self.client_ranks[client_id] = self.args.lora_rank
+            print(f"客户端 {client_id} → 第一档次 (秩={self.args.lora_rank})")
+            print(f"  计算耗时: {compute_score:.4f}s, 通信耗时: {communication_score:.4f}s, 总计: {total_score:.4f}s")
+        
+        # 第二档次（资源中等）：秩 = lora_rank / 4
+        for i in range(tier1_size, tier1_size + tier2_size):
+            client_id, total_score, compute_score, communication_score = client_scores[i]
+            self.client_ranks[client_id] = self.args.lora_rank // 4
+            print(f"客户端 {client_id} → 第二档次 (秩={self.args.lora_rank // 2})")
+            print(f"  计算耗时: {compute_score:.4f}s, 通信耗时: {communication_score:.4f}s, 总计: {total_score:.4f}s")
+        
+        # 第三档次（资源受限）：秩 = lora_rank / 4
+        for i in range(tier1_size + tier2_size, num_clients):
+            client_id, total_score, compute_score, communication_score = client_scores[i]
+            self.client_ranks[client_id] = self.args.lora_rank // 4
+            print(f"客户端 {client_id} → 第三档次 (秩={self.args.lora_rank // 4})")
+            print(f"  计算耗时: {compute_score:.4f}s, 通信耗时: {communication_score:.4f}s, 总计: {total_score:.4f}s")
+        
+        print("="*80 + "\n")
+    
+    def truncate_lora_rank(self, model, target_rank, client_id):
+        """根据目标秩截断 LoRA 矩阵
+        将超出秩的部分矩阵值设置为 0
+        
+        LoRA 矩阵维度：
+        - B 矩阵: (in_features, rank)
+        - A 矩阵: (rank, out_features)
+        
+        Args:
+            model: LoRA 模型
+            target_rank: 目标秩大小
+            client_id: 客户端 ID
+        """
+        if target_rank >= self.args.lora_rank or self.args.method != 'HeLoRA':
+            return model
+        
+        model_state = model.state_dict()
+        for name in model_state:
+            if 'lora_B' in name:
+                # B 矩阵: (in_features, rank) -> 保留前 target_rank 列
+                param = model_state[name]
+                if param.shape[1] > target_rank:
+                    model_state[name][:, target_rank:] = 0
+            elif 'lora_A' in name:
+                # A 矩阵: (rank, out_features) -> 保留前 target_rank 行
+                param = model_state[name]
+                if param.shape[0] > target_rank:
+                    model_state[name][target_rank:, :] = 0
+        
+        model.load_state_dict(model_state)
+        return model
+    
+    def fill_truncated_lora(self, model, client_id):
+        """使用平均值填充被截断的 LoRA 矩阵
+        
+        LoRA 矩阵维度：
+        - B 矩阵: (in_features, rank) -> 使用前 target_rank 列的平均值填充后续列
+        - A 矩阵: (rank, out_features) -> 使用前 target_rank 行的平均值填充后续行
+        
+        Args:
+            model: 训练后的 LoRA 模型
+            client_id: 客户端 ID
+        """
+        target_rank = self.client_ranks.get(client_id, self.args.lora_rank)
+        
+        if target_rank >= self.args.lora_rank:
+            return model
+        
+        model_state = model.state_dict()
+        
+        for name in model_state:
+            if 'lora_B' in name:
+                # B 矩阵: (in_features, rank) -> 使用前 target_rank 列的平均值填充后续列
+                current_param = model_state[name]
+                if target_rank > 0 and current_param.shape[1] > target_rank:
+                    # 计算前 target_rank 列的平均值
+                    col_mean = torch.mean(current_param[:, :target_rank], dim=1, keepdim=True)  # (in_features, 1)
+                    # 用平均值填充后续列
+                    for col_idx in range(target_rank, current_param.shape[1]):
+                        model_state[name][:, col_idx] = col_mean.squeeze()
+            elif 'lora_A' in name:
+                # A 矩阵: (rank, out_features) -> 使用前 target_rank 行的平均值填充后续行
+                current_param = model_state[name]
+                if target_rank > 0 and current_param.shape[0] > target_rank:
+                    # 计算前 target_rank 行的平均值
+                    row_mean = torch.mean(current_param[:target_rank, :], dim=0, keepdim=True)  # (1, out_features)
+                    # 用平均值填充后续行
+                    for row_idx in range(target_rank, current_param.shape[0]):
+                        model_state[name][row_idx, :] = row_mean.squeeze()
+        
+        model.load_state_dict(model_state)
+        return model
 
+    
+    def allocate_client_timings(self, partition_map, lora_params_size):
+        """为所有客户端预分配计算和通信时间
+        
+        Args:
+            partition_map: 客户端数据分配映射
+            lora_params_size: LoRA参数大小（字节）
+        """
+        print("\n" + "="*80)
+        print("预分配客户端网速")
+        print("="*80)
+        
+        for client_id in range(self.args.num_client):
+            # 计算该客户端的计算耗时
+            forward_time, backward_time = self.calculate_client_compute_time(partition_map[client_id])
+            
+            # 为该客户端分配网络速率
+            upload_speed = np.random.uniform(5, 20)  # 上传速率 5-20 Mbps
+            download_speed = 50.0  # 下载速率 50 Mbps
+            
+            # 存储预分配的速度和计算耗时
+            self.client_allocated_timings[client_id] = {
+                'forward_time': forward_time,
+                'backward_time': backward_time,
+                'upload_speed': upload_speed,
+                'download_speed': download_speed
+            }
+            
+            print(f"客户端 {client_id}:")
+            print(f"  前向传播耗时: {forward_time:.4f}s")
+            print(f"  反向传播耗时: {backward_time:.4f}s")
+            print(f"  上传速率: {upload_speed:.2f}Mbps, 下载速率: {download_speed:.2f}Mbps")
+        
+        print("="*80 + "\n")
+
+    
+    def calculate_client_compute_time(self, data_indices):
+        """计算单个客户端的计算耗时（秒）
+        返回前向传播时间和反向传播时间
+        公式：基于高斯分布抽样的平均耗时 * 批量数 * epoch数
+        """
+        if not self.timing_stats:
+            self.load_timing_stats()
+        
+        # 计算批量数
+        num_batches = len(data_indices) // self.args.batch_size
+        if len(data_indices) % self.args.batch_size != 0:
+            num_batches += 1
+        
+        # 从高斯分布中抽样前向和反向传播时间
+        # 使用平均值作为均值，10%的平均值作为标准差
+        avg_forward = self.timing_stats.get('avg_forward_time', 0.01)
+        avg_backward = self.timing_stats.get('avg_backward_time', 0.01)
+        
+        std_dev_forward = avg_forward * 0.1
+        std_dev_backward = avg_backward * 0.1
+        
+        sampled_forward = np.random.normal(avg_forward, std_dev_forward)
+        sampled_backward = np.random.normal(avg_backward, std_dev_backward)
+        
+        # 确保采样值非负
+        sampled_forward = max(sampled_forward, 0.001)
+        sampled_backward = max(sampled_backward, 0.001)
+        
+        # 计算前向和反向传播时间 = 采样时间 * 批量数 * epoch数
+        forward_time = sampled_forward * num_batches * self.args.epochs
+        backward_time = sampled_backward * num_batches * self.args.epochs
+        
+        return forward_time, backward_time
+    
+    def estimate_transmitted_bytes(self, grad_tensor, default_bytes):
+        """估算本轮上传梯度时需要传输的字节数。"""
+        # if isinstance(grad_tensor, torch.Tensor):
+        #     nonzero = torch.count_nonzero(grad_tensor).item()
+        #     if nonzero > 0:
+        #         return nonzero * 4
+        #     return grad_tensor.numel() * 4
+        if self.args.method == 'pq':
+            return grad_tensor.numel() * self.args.bit_len // 8  # pq 传输原始梯度
+        return default_bytes
+    
+    def calculate_communication_time(self, lora_params_size):
+        """计算单个客户端的通信耗时（秒）
+        为每个客户端随机分配上传速率，下载速率为50Mbps
+        公式：参数大小 / 网络速率
+        """
+        # 随机分配上传速率 (5-20 Mbps)
+        upload_speed = np.random.uniform(5, 20)  # Mbps
+        download_speed = 50.0  # Mbps
+        
+        # 转换为字节/秒：Mbps * 1024 * 1024 / 8
+        upload_speed_bytes_per_sec = upload_speed * 1024 * 1024 / 8
+        download_speed_bytes_per_sec = download_speed * 1024 * 1024 / 8
+        
+        # 通信时间 = 上传时间 + 下载时间
+        upload_time = lora_params_size / upload_speed_bytes_per_sec
+        download_time = lora_params_size / download_speed_bytes_per_sec
+        
+        return upload_time + download_time, upload_speed, download_speed
+    
+    def save_round_timings(self):
+        """保存和打印每轮的耗时统计"""
+        if not self.round_timings:
+            print("没有时间统计数据")
+            return
+        
+        # 打印显示
+        print("\n" + "="*80)
+        print("联邦学习每轮耗时统计")
+        print("="*80)
+        
+        total_compute_time = 0
+        total_communication_time = 0
+        total_time = 0
+        
+        for timing in self.round_timings:
+            print(f"\n轮次 {timing['round']}:")
+            print(f"  最大前向耗时: {timing['max_forward_time']:.4f}s")
+            print(f"  最大反向耗时: {timing['max_backward_time']:.4f}s")
+            print(f"  最大通信耗时: {timing['max_communication_time']:.4f}s")
+            print(f"  本轮总耗时: {timing['max_total_time']:.4f}s")
+            print(f"  瓶颈客户端: {timing['bottleneck_client']}")
+        
+        print(f"\n总计统计:")
+        total_forward_time = sum([t['max_forward_time'] for t in self.round_timings])
+        total_backward_time = sum([t['max_backward_time'] for t in self.round_timings])
+        total_communication_time = sum([t['max_communication_time'] for t in self.round_timings])
+        total_time = sum([t['max_total_time'] for t in self.round_timings])
+        print(f"  总前向耗时: {total_forward_time:.4f}s")
+        print(f"  总反向耗时: {total_backward_time:.4f}s")
+        print(f"  总通信耗时: {total_communication_time:.4f}s")
+        print(f"  实际训练时间: {total_time:.4f}s")
+        print(f"  平均每轮耗时: {total_time / len(self.round_timings):.4f}s")
+        print(f"  通信比例: {total_communication_time / total_time * 100:.2f}%")
+        print(f"  累计训练时间: {self.total_training_time:.4f}s")
+        print("="*80)
+        
+        # 保存到文件
+        output_file = f'fed_round_timings_{self.args.model}_{self.args.dataset}.txt'
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("="*80 + "\n")
+            f.write("联邦学习每轮耗时统计\n")
+            f.write("="*80 + "\n\n")
+            
+            f.write(f"模型: {self.args.model}\n")
+            f.write(f"数据集: {self.args.dataset}\n")
+            f.write(f"批大小: {self.args.batch_size}\n")
+            f.write(f"Epoch数: {self.args.epochs}\n")
+            f.write(f"通信轮数: {self.args.comm_round}\n")
+            f.write(f"采样比例: {self.args.sample_fraction}\n\n")
+            
+            for timing in self.round_timings:
+                f.write(f"轮次 {timing['round']}:\n")
+                f.write(f"  最大前向耗时: {timing['max_forward_time']:.4f}s\n")
+                f.write(f"  最大反向耗时: {timing['max_backward_time']:.4f}s\n")
+                f.write(f"  最大通信耗时: {timing['max_communication_time']:.4f}s\n")
+                f.write(f"  本轮总耗时: {timing['max_total_time']:.4f}s\n")
+                f.write(f"  瓶颈客户端: {timing['bottleneck_client']}\n\n")
+            
+            f.write(f"总计统计:\n")
+            total_forward_time = sum([t['max_forward_time'] for t in self.round_timings])
+            total_backward_time = sum([t['max_backward_time'] for t in self.round_timings])
+            total_communication_time = sum([t['max_communication_time'] for t in self.round_timings])
+            total_time = sum([t['max_total_time'] for t in self.round_timings])
+            f.write(f"  总前向耗时: {total_forward_time:.4f}s\n")
+            f.write(f"  总反向耗时: {total_backward_time:.4f}s\n")
+            f.write(f"  总通信耗时: {total_communication_time:.4f}s\n")
+            f.write(f"  实际训练时间: {total_time:.4f}s\n")
+            f.write(f"  平均每轮耗时: {total_time / len(self.round_timings):.4f}s\n")
+            f.write(f"  通信比例: {total_communication_time / total_time * 100:.2f}%\n")
+            f.write(f"  累计训练时间: {self.total_training_time:.4f}s\n")
+        
+        print(f"\n时间统计已保存到: {output_file}")
 
 def save_file_metric(name: str, metric_list: list):
     path = os.path.join('./newsave', name)

@@ -1,3 +1,13 @@
+# 统计运行时间
+python timing_analyzer.py --model roberta-large --dataset 20_newsgroups --max_length 256 --batch_size 16 --lr 1e-3 
+
+
+nohup python -u main_.py --label --partition --model roberta-large --method raw --GPU 5 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 50 --lr 1e-2 > result/roberta_20news_iid_raw.out 2>&1 &
+nohup python -u main_.py --label --partition --model roberta-large --method HeLoRA --GPU 4 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 50 --lr 1e-2 > result/roberta_20news_iid_helora.out 2>&1 &
+nohup python -u main_.py --label --partition --model roberta-large --method pq --GPU 3 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 50 --lr 1e-2 > result/roberta_20news_iid_pq.out 2>&1 &
+nohup python -u main_.py --label --partition --model roberta-large --method topk --GPU 4 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 50 --lr 1e-2 > result/roberta_20news_iid_topk.out 2>&1 &
+nohup python -u main_.py --label --partition --model roberta-large --method FFTHM --GPU 5 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 50 --lr 1e-2 > result/roberta_20news_iid_ffthm.out 2>&1 &
+
 nohup python -u main_.py --label --partition --model distilbert-base-multilingual-cased --method motivation --GPU 0 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/distilbert_20news_iid_motivation_w.out 2>&1 &
 nohup python -u main_.py --label --partition --model distilbert-base-multilingual-cased --method motivation --GPU 1 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 --pmax 0.7 --pmin 0.6 > result/distilbert_20news_iid_motivation_s.out 2>&1 &
 nohup python -u main_.py --label --partition --method motivation --GPU 0 --lr 1e-3 --max_length 256 --batch_size 16 --comm_round 100 > result/roberta_20news_iid_motivation_w.out 2>&1 &

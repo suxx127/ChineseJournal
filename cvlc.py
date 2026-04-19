@@ -121,7 +121,7 @@ class Fed_cvlc(object):
             self.packet_max = self.packet_min
             grad = self.topk_pq(grad=grad, param=param, blocks=block, bit_len=bit_len)
         elif method == 'pq':
-            grad = pq_pure(grad=grad, bit_len=6)
+            grad = pq_pure(grad=grad, bit_len=self.args.bit_len)
         elif method == 'test':
             s1 = None
             loss = []

@@ -65,75 +65,68 @@ class CustomLoRALinear(nn.Linear):
             return super().forward(x)
 
 # ------------------- 安全替换PEFT LoRA层 -------------------
+# proportion: 置零比例（0-1），表示训练多少比例的行/列
 def safe_replace_lora_layers(peft_model, proportion):
+    if proportion == 1:
+        return peft_model  # 不需要替换，直接返回原模型
     with torch.no_grad():
         for name, module in peft_model.named_modules():
             if hasattr(module, 'lora_A') and module.lora_A is not None:
+                # lora_A_weight = module.lora_A['default'].weight
+                # row_num = lora_A_weight.shape[0]
+                # train_row = math.ceil(row_num * proportion)
+                # frozen_row = list(range(train_row,row_num))
+                # def make_hook(row_idx):
+                #     def hook(grad):
+                #         if grad is not None:
+                #             grad.data[row_idx, :] = 0
+                #         return grad
+                #     return hook
+                # lora_A_weight.register_hook(make_hook(frozen_row))
                 lora_A_weight = module.lora_A['default'].weight
                 row_num = lora_A_weight.shape[0]
-                train_row = math.ceil(row_num * proportion)
-                frozen_row = list(range(train_row,row_num))
-                print(f"Froze row {frozen_row} of {name}.lora_A")
-                def make_hook(row_idx):
+                col_num = lora_A_weight.shape[1]
+                proportion_row = int(math.sqrt(proportion)*row_num) / row_num
+                proportion_col = proportion / proportion_row
+                frozen_row_index = list(range(math.ceil(row_num * proportion_row), row_num))
+                frozen_col_index = list(range(math.ceil(col_num * proportion_col), col_num))
+                # lora_B_weight.data[frozen_row_index, :] = 0
+                def make_hook(row_idx, col_idx):
                     def hook(grad):
                         if grad is not None:
                             grad.data[row_idx, :] = 0
-                        return grad
-                    return hook
-                lora_A_weight.register_hook(make_hook(frozen_row))
-
-                # lora_B_weight = module.lora_A['default'].weight
-                # row_num = lora_B_weight.shape[0]
-                # col_num = lora_B_weight.shape[1]
-                # proportion_row = int((1-math.sqrt(1-proportion))*row_num) / row_num
-                # proportion_col = 1-(1-proportion) / (1-proportion_row)
-                # print("the froze proportion of row and col in A is ", proportion_row, proportion_col)
-                # frozen_row_index = random.sample(list(range(row_num)), math.ceil(row_num * proportion_row))
-                # frozen_col_index = random.sample(list(range(col_num)), math.ceil(col_num * proportion_col))
-                # # lora_B_weight.data[frozen_row_index, :] = 0
-                # print(f"Froze row {frozen_row_index} of {name}.lora_B")
-                # print(f"Froze col {frozen_col_index} of {name}.lora_B")
-                # def make_hook(row_idx, col_idx):
-                #     def hook(grad):
-                #         if grad is not None:
-                #             grad.data[row_idx, :] = 0
-                #             grad.data[:, col_idx] = 0
-                #         return grad
-                #     return hook
-                # lora_B_weight.register_hook(make_hook(frozen_row_index, frozen_col_index))
-            if hasattr(module, 'lora_B') and module.lora_B is not None:
-                lora_B_weight = module.lora_B['default'].weight
-                col_num = lora_B_weight.shape[1]
-                train_col = math.ceil(col_num * proportion)
-                frozen_col = list(range(train_col,row_num))
-                print(f"Froze row {frozen_col} of {name}.lora_B")
-                def make_hook(col_idx):
-                    def hook(grad):
-                        if grad is not None:
                             grad.data[:, col_idx] = 0
                         return grad
                     return hook
-                lora_B_weight.register_hook(make_hook(frozen_col))
-                
-                # lora_A_weight = module.lora_B['default'].weight
-                # column_num = lora_A_weight.shape[1]
-                # row_num = lora_A_weight.shape[0]
-                # proportion_col = int((1-math.sqrt(1-proportion))*column_num) / column_num
-                # proportion_row = 1-(1-proportion) / (1-proportion_row)
-                # print("the froze proportion of col and row in B is ", proportion_col, proportion_row)
-                # frozen_column_index = random.sample(list(range(column_num)), math.ceil(column_num * proportion_col))
-                # frozen_row_index = random.sample(list(range(row_num)), math.ceil(row_num * proportion_row))
-                # # lora_A_weight.data[:, frozen_column_index] = 0
-                # print(f"Froze column {frozen_column_index} of {name}.lora_A")
-                # print(f"Froze row {frozen_row_index} of {name}.lora_A")
-                # def make_hook(column_idx, row_idx):
+                lora_A_weight.register_hook(make_hook(frozen_row_index, frozen_col_index))
+            if hasattr(module, 'lora_B') and module.lora_B is not None:
+                # lora_B_weight = module.lora_B['default'].weight
+                # col_num = lora_B_weight.shape[1]
+                # train_col = math.ceil(col_num * proportion)
+                # frozen_col = list(range(train_col,col_num))
+                # def make_hook(col_idx):
                 #     def hook(grad):
                 #         if grad is not None:
-                #             grad.data[:, column_idx] = 0
-                #             grad.data[row_idx, :] = 0
+                #             grad.data[:, col_idx] = 0
                 #         return grad
                 #     return hook
-                # lora_A_weight.register_hook(make_hook(frozen_column_index, frozen_row_index))
+                # lora_B_weight.register_hook(make_hook(frozen_col))
+                lora_B_weight = module.lora_B['default'].weight
+                col_num = lora_B_weight.shape[1]
+                row_num = lora_B_weight.shape[0]
+                proportion_col = int(math.sqrt(proportion)*col_num) / col_num
+                proportion_row = proportion / proportion_col
+                frozen_column_index = list(range(math.ceil(col_num * proportion_col), col_num))
+                frozen_row_index = list(range(math.ceil(row_num * proportion_row), row_num))
+                # lora_A_weight.data[:, frozen_column_index] = 0
+                def make_hook(column_idx, row_idx):
+                    def hook(grad):
+                        if grad is not None:
+                            grad.data[:, column_idx] = 0
+                            grad.data[row_idx, :] = 0
+                        return grad
+                    return hook
+                lora_B_weight.register_hook(make_hook(frozen_column_index, frozen_row_index))
     return peft_model
 
 

@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 
 # Manually set your input files/globs/directories here.
 MANUAL_INPUTS = [
-    "result/roberta_20news_iid_raw.out",
-    "result/roberta_20news_iid_helora.out",
+    # "result/roberta_20news_iid_raw.out",
+    # "result/roberta_20news_iid_helora.out",
     "result/roberta_20news_iid_ffthm.out",
     "result/roberta_20news_iid_pq.out",
     "result/roberta_20news_iid_topk.out",

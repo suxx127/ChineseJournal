@@ -49,27 +49,35 @@ class Fed_trainer(object):
         self.client_ranks = {}  # 记录每个客户端的秩大小 {client_id: rank}
 
     def get_grad(self, model):
-        grad = torch.tensor([])
-        param = torch.tensor([])
+        grad_parts = []
+        param_parts = []
         name_grad = {}
         name_param = {}
         name_paramlast = {}
-        for layer in self.gobal_model.state_dict():
+        global_state = self.gobal_model.state_dict()
+        model_state = model.state_dict()
+
+        for layer, global_param in global_state.items():
             if layer.find("num_batches_tracked") != -1:
                 continue
             # if 'lora' in layer or any(part in layer for part in self.untrain_part):
             if 'lora' in layer:
-                if self.args.method == 'prune':
-                    param_now = model.state_dict()[layer+"_orig"].detach().cpu()
-                else:
-                    param_now = model.state_dict()[layer].detach().cpu()
-                param_last = self.gobal_model.state_dict()[layer].detach().cpu()
+                param_now = model_state[layer].detach().cpu()
+                param_last = global_param.detach().cpu()
                 param_g = param_last - param_now
-                param = torch.cat((param, param_now.view(-1)))
-                grad = torch.cat((grad, param_g.view(-1)))
+                param_parts.append(param_now.reshape(-1))
+                grad_parts.append(param_g.reshape(-1))
                 name_grad[layer] = param_g
                 name_param[layer] = param_now
                 name_paramlast[layer] = param_last
+
+        if grad_parts:
+            grad = torch.cat(grad_parts)
+            param = torch.cat(param_parts)
+        else:
+            grad = torch.empty(0)
+            param = torch.empty(0)
+
         print("the proportion of zeros in gradients is ", torch.sum(grad < 1e-5) / grad.numel())
         return grad, param, name_grad, name_param, name_paramlast
 
@@ -166,48 +174,34 @@ class Fed_trainer(object):
     def combine(self, grad, gobal_model=None):
         if gobal_model is None:
             gobal_model = self.gobal_model
-        grad = grad.cuda()
         current_index = 0
-        model = copy.deepcopy(gobal_model)
-        current_state_dict = model.state_dict()
-        for name, param in current_state_dict.items():
-            # if 'lora' in name or any(part in name for part in self.untrain_part):
-            if 'lora' in name:
-                param = param.cuda()
-                numel = param.data.numel()
-                size = param.data.size()
-                current_state_dict[name] = torch.subtract(param.data.detach(), 
-                                                          grad[current_index:current_index + numel].view(size))
+        with torch.no_grad():
+            for name, param in gobal_model.named_parameters():
+                if 'lora' not in name:
+                    continue
+                numel = param.numel()
+                grad_slice = grad[current_index:current_index + numel].view_as(param)
+                if grad_slice.device != param.device:
+                    grad_slice = grad_slice.to(param.device, non_blocking=True)
+                param.sub_(grad_slice)
                 current_index += numel
-        model.load_state_dict(current_state_dict)
-        return model
+        return gobal_model
 
     def aggregate(self, grad_dist: dict, cohorts: list, partition_map: dict):
         model_gra = torch.zeros_like(grad_dist[cohorts[0]])
+        weights = {}
         data_sum = 0
-        
-        # 计算权重总和
+
         for client in cohorts:
             data_size = len(partition_map[client])
-            
-            # 如果是 HeLoRA 方法，权重 = 数据量 * 秩数
             if self.args.method == 'HeLoRA' and client in self.client_ranks:
-                weight = data_size * self.client_ranks[client]
+                weights[client] = data_size * self.client_ranks[client]
             else:
-                weight = data_size
-            
-            data_sum += weight
-        
-        # 聚合梯度
+                weights[client] = data_size
+            data_sum += weights[client]
+
         for client in cohorts:
-            data_size = len(partition_map[client])
-            
-            # 如果是 HeLoRA 方法，权重 = 数据量 * 秩数
-            if self.args.method == 'HeLoRA' and client in self.client_ranks:
-                w = data_size * self.client_ranks[client] / data_sum
-            else:
-                w = data_size / data_sum
-            
+            w = weights[client] / data_sum
             model_gra += (w * grad_dist[client])
         
         return model_gra
@@ -336,7 +330,7 @@ class Fed_trainer(object):
                 self.accelerator.print(f'CLIENT:{client}')
                 local_model = copy.deepcopy(self.gobal_model)
                 local_model = self.train(data=data, data_indices=partition_map[client],
-                                        model=copy.deepcopy(local_model),
+                                        model=local_model,
                                         tokenizer=tokenizer, task=task, client_idx=i,
                                         update_proportion=client_proportions[client], client_id=client)
                 # if rnd == 0 and client == cohorts[0]:
@@ -367,20 +361,19 @@ class Fed_trainer(object):
                 # 如果是 FFTHM 方法，按训练比例p缩放反向传播时间和上传时间
                 if self.args.method == 'FFTHM':
                     p = client_proportions[client]
-                    backward_time_scaled = backward_time * p
+                    backward_time_scaled = backward_time * p * math.sqrt(p)
                     upload_time_scaled = upload_time * p
                     download_time_scaled = download_time  # 下载时间不变
-                else:
-                    backward_time_scaled = backward_time
-                    upload_time_scaled = upload_time
-                    download_time_scaled = download_time
-                
-                # 如果是 HeLoRA 方法，额外按客户端秩数/原始秩数的比例缩放时间
-                if self.args.method == 'HeLoRA':
+                elif self.args.method == 'HeLoRA':
+                    # HeLoRA 方法根据客户端秩大小缩放时间
                     rank_ratio = self.client_ranks.get(client, self.args.lora_rank) / self.args.lora_rank
                     backward_time_scaled *= rank_ratio
                     upload_time_scaled *= rank_ratio
                     download_time_scaled *= rank_ratio
+                else:
+                    backward_time_scaled = backward_time
+                    upload_time_scaled = upload_time
+                    download_time_scaled = download_time
                 
                 communication_time = upload_time_scaled + download_time_scaled
                 total_client_time = forward_time + backward_time_scaled + communication_time
@@ -438,9 +431,10 @@ class Fed_trainer(object):
             
             if self.args.method == 'raw':
                 name_model = {}
-                for layer in self.gobal_model.state_dict():
+                global_state = self.gobal_model.state_dict()
+                for layer in global_state:
                     if 'lora' in layer:
-                        name_model[layer] = self.gobal_model.state_dict()[layer].detach().cpu()
+                        name_model[layer] = global_state[layer].detach().cpu()
                 file_path = 'para/' + self.args.model + '_' + str(rnd) + '.pt'
                 torch.save(name_model, file_path)
         
@@ -483,7 +477,7 @@ class Fed_trainer(object):
                                               learning_rate=self.args.lr,
                                               ddp_find_unused_parameters=False,
                                               lr_scheduler_type="constant",
-                                              logging_steps=1)
+                                              logging_steps=10)
             trainer = Trainer(
                 model=model,
                 tokenizer=tokenizer,
@@ -499,7 +493,7 @@ class Fed_trainer(object):
                                                      learning_rate=self.args.lr,
                                                      lr_scheduler_type="constant",
                                                      ddp_find_unused_parameters=False,
-                                                     logging_steps=1)
+                                                     logging_steps=10)
             trainer = Seq2SeqTrainer(
                 model=model,
                 tokenizer=tokenizer,
@@ -514,7 +508,6 @@ class Fed_trainer(object):
         if self.args.method == 'HeLoRA' and client_id is not None:
             model = self.fill_truncated_lora(model, client_id)
         
-        model.cpu()
         return model
 
     def test_metric(self, data, tokenizer, validation_key, task):
@@ -560,7 +553,6 @@ class Fed_trainer(object):
             results = trainer.evaluate(max_length=self.args.max_length + 3)
         if self.accelerator.is_local_main_process:
             print(results)
-        self.gobal_model.cpu()
         return results, predictions
 
     def save_model(self):

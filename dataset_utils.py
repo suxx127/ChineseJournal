@@ -94,7 +94,7 @@ def get_20_newsgroups_tokenizer_dataset(tokenizer, max_length):
     full_dataset = DatasetDict({'train': train_dataset, 'test': test_dataset})
 
     def tokenize_function(examples):
-        return tokenizer(examples['text'], padding='max_length', truncation=True, max_length=max_length)
+        return tokenizer(examples['text'], truncation=True, max_length=max_length)
 
     tokenized_dataset = full_dataset.map(tokenize_function, batched=True)
     tokenized_dataset = tokenized_dataset.remove_columns(['text'])

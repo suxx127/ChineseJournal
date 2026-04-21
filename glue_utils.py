@@ -34,10 +34,9 @@ class Glue_utils(object):
     def get_tokenizer_dataset(self, tokenizer, max_length: int):
         def preprocess_function(examples):
             if self.sentence2_key is None:
-                return tokenizer(examples[self.sentence1_key], padding='max_length', truncation=True,
-                                 return_tensors="pt", max_length=max_length)
-            return tokenizer(examples[self.sentence1_key], examples[self.sentence2_key], padding='max_length',
-                             truncation=True, return_tensors="pt", max_length=max_length)
+                return tokenizer(examples[self.sentence1_key], truncation=True, max_length=max_length)
+            return tokenizer(examples[self.sentence1_key], examples[self.sentence2_key],
+                             truncation=True, max_length=max_length)
 
         tokenized_datasets = self.raw_dataset.map(preprocess_function, batched=True)
         return tokenized_datasets

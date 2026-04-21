@@ -300,7 +300,7 @@ def get_model_lora(model: str, lora_alpha: int, lora_rank: int, num_labels: list
     peft_model = get_peft_model(model_pre, peft_config)
     trainable_parameters, _ = peft_model.get_nb_trainable_parameters()
     peft_model.print_trainable_parameters()
-    set_requires_grad(untrain_part=untrain_part, model=peft_model)
+    # set_requires_grad(untrain_part=untrain_part, model=peft_model)
     return peft_model, trainable_parameters, untrain_part
 
 

@@ -339,8 +339,8 @@ class Fed_trainer(object):
                                         model=copy.deepcopy(local_model),
                                         tokenizer=tokenizer, task=task, client_idx=i,
                                         update_proportion=client_proportions[client], client_id=client)
-                if rnd == 0 and client == cohorts[0]:
-                    self.copy_model_expect_lora(local_model)
+                # if rnd == 0 and client == cohorts[0]:
+                #     self.copy_model_expect_lora(local_model)
                 
                 allocated_timing = self.client_allocated_timings[client]
                 forward_time = allocated_timing['forward_time']
@@ -909,20 +909,18 @@ class Fed_trainer(object):
         # 使用平均值作为均值，10%的平均值作为标准差
         avg_forward = self.timing_stats.get('avg_forward_time', 0.01)
         avg_backward = self.timing_stats.get('avg_backward_time', 0.01)
+        # 计算前向和反向传播平均时间 = 平均时间 * 批量数 * epoch数
+        avg_forward_time = avg_forward * num_batches * self.args.epochs
+        avg_backward_time = avg_backward * num_batches * self.args.epochs
+        std_forward_time = avg_forward_time  # 前向传播时间的标准差为平均值的10%
+        std_backward_time = avg_backward_time  # 反向传播时间的标准差为平均值的10%
         
-        std_dev_forward = avg_forward * 0.1
-        std_dev_backward = avg_backward * 0.1
-        
-        sampled_forward = np.random.normal(avg_forward, std_dev_forward)
-        sampled_backward = np.random.normal(avg_backward, std_dev_backward)
+        forward_time = np.random.normal(avg_forward_time, std_forward_time)
+        backward_time = np.random.normal(avg_backward_time, std_backward_time)
         
         # 确保采样值非负
-        sampled_forward = max(sampled_forward, 0.001)
-        sampled_backward = max(sampled_backward, 0.001)
-        
-        # 计算前向和反向传播时间 = 采样时间 * 批量数 * epoch数
-        forward_time = sampled_forward * num_batches * self.args.epochs
-        backward_time = sampled_backward * num_batches * self.args.epochs
+        forward_time = max(forward_time, 0.001)
+        backward_time = max(backward_time, 0.001)
         
         return forward_time, backward_time
     
@@ -935,6 +933,8 @@ class Fed_trainer(object):
         #     return grad_tensor.numel() * 4
         if self.args.method == 'pq':
             return grad_tensor.numel() * self.args.bit_len // 8  # pq 传输原始梯度
+        elif self.args.method == 'topk':
+            return int(grad_tensor.numel() * self.args.proportion) * (33 + int(math.log2(grad_tensor.numel())))  # top-k 传输原始梯度
         return default_bytes
     
     def calculate_communication_time(self, lora_params_size):

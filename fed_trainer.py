@@ -367,9 +367,9 @@ class Fed_trainer(object):
                 elif self.args.method == 'HeLoRA':
                     # HeLoRA 方法根据客户端秩大小缩放时间
                     rank_ratio = self.client_ranks.get(client, self.args.lora_rank) / self.args.lora_rank
-                    backward_time_scaled *= rank_ratio
-                    upload_time_scaled *= rank_ratio
-                    download_time_scaled *= rank_ratio
+                    backward_time_scaled = backward_time * rank_ratio
+                    upload_time_scaled = upload_time * rank_ratio
+                    download_time_scaled = download_time * rank_ratio
                 else:
                     backward_time_scaled = backward_time
                     upload_time_scaled = upload_time
@@ -468,7 +468,7 @@ class Fed_trainer(object):
         model.train()
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize
-        optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=0.9)
+        optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         if task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
             training_args = TrainingArguments(output_dir='./save/model', save_steps=save_steps,
                                             #   save_strategy='epoch',
@@ -682,7 +682,10 @@ class Fed_trainer(object):
     
     def load_timing_stats(self):
         """从timing_analyzer.py生成的文件中读取时间统计"""
-        timing_file = f'timing_results_{self.args.model}_{self.args.dataset}.txt'
+        if self.args.dataset == 'glue':
+            timing_file = f'timing_results_{self.args.model}_{self.args.dataset}_{self.args.subdataset}.txt'
+        else:
+            timing_file = f'timing_results_{self.args.model}_{self.args.dataset}.txt'
         try:
             with open(timing_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()

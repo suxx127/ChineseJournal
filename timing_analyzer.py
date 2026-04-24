@@ -15,7 +15,7 @@ from torch.utils.data import Subset, DataLoader
 from torch import nn
 
 # 设置使用GPU 3
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 from model_utils import get_model_tokenizer, get_model_lora
 from dataset_utils import get_fed_data_info, Metrics_trainer
@@ -640,7 +640,10 @@ def main():
     analyzer.print_results()
     
     # 保存结果
-    output_file = f"timing_results_{args.model}_{args.dataset}.txt"
+    if args.dataset == 'glue':
+        output_file = f"timing_results_{args.model}_{args.dataset}_{args.subdataset}.txt"
+    else:
+        output_file = f"timing_results_{args.model}_{args.dataset}.txt"
     analyzer.save_results(output_file)
 
 

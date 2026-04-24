@@ -34,6 +34,7 @@ def args_parser():
     parser.add_argument('--batch_size', type=int, default=64, help='batch size for training')
     parser.add_argument('--test_bs', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
+    parser.add_argument('--momentum', type=float, default=0, help='momentum for SGD optimizer')
     parser.add_argument('--epochs', type=int, default=5, help='number of local epochs')
     parser.add_argument('--save_model', action='store_true', help='save model after training')
     parser.add_argument('--save_metric', action='store_true', help='save metric after training')

@@ -471,7 +471,7 @@ class Fed_trainer(object):
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize
         # optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
+        optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr)
         if task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
             training_args = TrainingArguments(output_dir='./save/model', save_steps=save_steps,
                                             #   save_strategy='epoch',

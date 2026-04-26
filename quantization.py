@@ -22,7 +22,7 @@ def PQ_quan(parameters, centroids):
     # ans[seed < probability] = right[seed < probability]
     # ans[seed >= probability] = left[seed >= probability]
     # return ans * torch.sign(parameters)
-    ans = torch.zeros_like(parameters)
+    ans = torch.zeros_like(parameters).cuda()
     p_max = torch.max(parameters)
     p_min = torch.min(parameters)
     interval = (p_max - p_min) / (centroids - 1)
@@ -30,7 +30,7 @@ def PQ_quan(parameters, centroids):
     right = left + interval
     probability = (parameters - left) / (right - left)
     probability[probability < 1e-5] = 0
-    seed = torch.rand(parameters.shape)
+    seed = torch.rand(parameters.shape).cuda()
     ans[seed < probability] = right[seed < probability]
     ans[seed >= probability] = left[seed >= probability]
     return ans

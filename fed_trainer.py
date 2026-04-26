@@ -62,8 +62,10 @@ class Fed_trainer(object):
                 continue
             # if 'lora' in layer or any(part in layer for part in self.untrain_part):
             if 'lora' in layer:
-                param_now = model_state[layer].detach().cpu()
-                param_last = global_param.detach().cpu()
+                # param_now = model_state[layer].detach().cpu()
+                # param_last = global_param.detach().cpu()
+                param_now = model_state[layer]
+                param_last = global_param
                 param_g = param_last - param_now
                 param_parts.append(param_now.reshape(-1))
                 grad_parts.append(param_g.reshape(-1))
@@ -264,7 +266,7 @@ class Fed_trainer(object):
         if self.args.method == 'HeLoRA':
             self.allocate_client_ranks_helora(partition_map, lora_params_size)
                 
-        self.accu_gra = torch.zeros((self.args.num_client, num_param))
+        self.accu_gra = torch.zeros((self.args.num_client, num_param)).cuda()
         self.set_data_collator(tokenizer=tokenizer, task=task)
         matrix = self.get_model_matrix_num()
         
@@ -429,14 +431,14 @@ class Fed_trainer(object):
                                                 validation_key=validation_key, task=task)
             
             
-            if self.args.method == 'raw':
-                name_model = {}
-                global_state = self.gobal_model.state_dict()
-                for layer in global_state:
-                    if 'lora' in layer:
-                        name_model[layer] = global_state[layer].detach().cpu()
-                file_path = 'para/' + self.args.model + '_' + str(rnd) + '.pt'
-                torch.save(name_model, file_path)
+            # if self.args.method == 'raw':
+            #     name_model = {}
+            #     global_state = self.gobal_model.state_dict()
+            #     for layer in global_state:
+            #         if 'lora' in layer:
+            #             name_model[layer] = global_state[layer].detach().cpu()
+            #     file_path = 'para/' + self.args.model + '_' + str(rnd) + '.pt'
+            #     torch.save(name_model, file_path)
         
             if predictions is not None:
                 result = self.metric_trainer.compute_metrics_predictions(predictions=predictions, data=data,
@@ -468,7 +470,8 @@ class Fed_trainer(object):
         model.train()
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize
-        optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
+        # optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
         if task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
             training_args = TrainingArguments(output_dir='./save/model', save_steps=save_steps,
                                             #   save_strategy='epoch',
@@ -477,7 +480,7 @@ class Fed_trainer(object):
                                               learning_rate=self.args.lr,
                                               ddp_find_unused_parameters=False,
                                               lr_scheduler_type="constant",
-                                              logging_steps=10)
+                                              logging_steps=10000)
             trainer = Trainer(
                 model=model,
                 tokenizer=tokenizer,
@@ -493,7 +496,7 @@ class Fed_trainer(object):
                                                      learning_rate=self.args.lr,
                                                      lr_scheduler_type="constant",
                                                      ddp_find_unused_parameters=False,
-                                                     logging_steps=10)
+                                                     logging_steps=10000)
             trainer = Seq2SeqTrainer(
                 model=model,
                 tokenizer=tokenizer,

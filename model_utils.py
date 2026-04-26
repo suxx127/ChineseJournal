@@ -294,31 +294,31 @@ def get_model_lora(model: str, lora_alpha: int, lora_rank: int, num_labels: list
     trainable_parameters, _ = peft_model.get_nb_trainable_parameters()
     peft_model.print_trainable_parameters()
     # set_requires_grad(untrain_part=untrain_part, model=peft_model)
-    return peft_model, trainable_parameters, untrain_part
+    return peft_model.cuda(), trainable_parameters, untrain_part
 
 
 def get_automodel(model_path: str, num_labels: list, task: Task):
     if task == Task.SequenceClassification:
-        model_pre = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=num_labels[0])
+        model_pre = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=num_labels[0], torch_dtype="auto")
         task_type = TaskType.CAUSAL_LM
     elif task == Task.CausalLM:
         # model_pre = AutoModelForSeq2SeqLM.from_pretrained(model_path, is_decoder=True)
-        model_pre = AutoModelForCausalLM.from_pretrained(model_path, is_decoder=True)
+        model_pre = AutoModelForCausalLM.from_pretrained(model_path, is_decoder=True, torch_dtype="auto")
         task_type = TaskType.CAUSAL_LM
     elif task == Task.TokenClassification:
         if 'llama' in model_path:
             exit("Llama do not support task TokenClassification")
         model_pre = AutoModelForTokenClassification.from_pretrained(model_path, id2label=num_labels[0],
-                                                                    label2id=num_labels[1])
+                                                                    label2id=num_labels[1], torch_dtype="auto")
         task_type = TaskType.CAUSAL_LM
     else:
         if 'llama' in model_path:
-            model_pre = AutoModel.from_pretrained(model_path)
+            model_pre = AutoModel.from_pretrained(model_path, torch_dtype="auto")
             model_pre.save_pretrained("./model/base_model")
-            model_pre = AutoModelForQuestionAnswering.from_pretrained("./model/base_model")
+            model_pre = AutoModelForQuestionAnswering.from_pretrained("./model/base_model", torch_dtype="auto")
             # model_pre = AutoModelForQuestionAnswering.from_pretrained(model_path)
         else:
-            model_pre = AutoModelForQuestionAnswering.from_pretrained(model_path)
+            model_pre = AutoModelForQuestionAnswering.from_pretrained(model_path, torch_dtype="auto")
         task_type = TaskType.QUESTION_ANS
     return model_pre, task_type
 

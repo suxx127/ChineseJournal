@@ -974,11 +974,11 @@ class Fed_cvlc(object):
 
     def topk_pure(self, grad, k, name_param, name_grad):
         """ Perform a topk operation on the gradient and return the processed gradient"""
-        grad = torch.tensor([])
+        grad = torch.tensor([]).cuda()
         for key in name_grad.keys():
             grad = torch.cat((grad, name_grad[key].view(-1)))
         value, indices = torch.topk(grad.abs(), k)
-        mask = torch.zeros_like(grad)
+        mask = torch.zeros_like(grad).cuda()
         mask[indices] = 1
         grad = grad * mask
         return grad

@@ -191,20 +191,32 @@ class Fed_trainer(object):
 
     def aggregate(self, grad_dist: dict, cohorts: list, partition_map: dict):
         model_gra = torch.zeros_like(grad_dist[cohorts[0]])
-        weights = {}
-        data_sum = 0
+        if self.args.method != 'FFTHM':
+            weights = {}
+            data_sum = 0
+            for client in cohorts:
+                data_size = len(partition_map[client])
+                if self.args.method == 'HeLoRA' and client in self.client_ranks:
+                    weights[client] = data_size * self.client_ranks[client]
+                else:
+                    weights[client] = data_size
+                data_sum += weights[client]
 
-        for client in cohorts:
-            data_size = len(partition_map[client])
-            if self.args.method == 'HeLoRA' and client in self.client_ranks:
-                weights[client] = data_size * self.client_ranks[client]
-            else:
-                weights[client] = data_size
-            data_sum += weights[client]
+            for client in cohorts:
+                w = weights[client] / data_sum
+                model_gra += (w * grad_dist[client])
+        else:
+            weights = {}
+            data_sum = torch.zeros_like(grad_dist[cohorts[0]])
+            for client in cohorts:
+                data_size = len(partition_map[client])
+                weights[client] = torch.where(grad_dist[client] != 0, torch.tensor(data_size), torch.tensor(1.0)).cuda()
+                data_sum += weights[client]
+            # data_sum = torch.where(data_sum == 0, torch.tensor(1.0).cuda(), data_sum)
+            for client in cohorts:
+                w = weights[client] / data_sum
+                model_gra += (w * grad_dist[client])
 
-        for client in cohorts:
-            w = weights[client] / data_sum
-            model_gra += (w * grad_dist[client])
         
         return model_gra
 
@@ -307,9 +319,13 @@ class Fed_trainer(object):
                 # 找出资源最丰富的客户端（总时间最短）
                 richest_client = min(client_times, key=client_times.get)
                 T_max = client_times[richest_client]
+                for client in cohorts:
+                    if client_times[client] <= client_times[richest_client] * 1.5:
+                        T_max = max(T_max, client_times[client])
                 
                 for client in cohorts:
-                    if client == richest_client:
+                    # if client == richest_client:
+                    if client_times[client] <= client_times[richest_client] * 1.5:
                         client_proportions[client] = 1.0
                     else:
                         forward = self.client_allocated_timings[client]['forward_time']
@@ -363,7 +379,9 @@ class Fed_trainer(object):
                 # 如果是 FFTHM 方法，按训练比例p缩放反向传播时间和上传时间
                 if self.args.method == 'FFTHM':
                     p = client_proportions[client]
-                    backward_time_scaled = backward_time * p * math.sqrt(p)
+                    p_r = max(int(math.sqrt(p)*self.args.lora_rank) / self.args.lora_rank, 4 / self.args.lora_rank)  
+                    p_f = p / p_r
+                    backward_time_scaled = backward_time * p * p_f
                     upload_time_scaled = upload_time * p
                     download_time_scaled = download_time  # 下载时间不变
                 elif self.args.method == 'HeLoRA':
@@ -459,7 +477,7 @@ class Fed_trainer(object):
     def train(self, data, data_indices, model, tokenizer, task, client_idx, update_proportion, client_id=None):
         # 用于对低秩矩阵进行冻结
         if self.args.method == 'FFTHM':
-            model = safe_replace_lora_layers(model, update_proportion)
+            model = safe_replace_lora_layers(model, update_proportion, self.args)
         
         # 如果是 HeLoRA 方法，执行秩截断
         if self.args.method == 'HeLoRA' and client_id is not None:
@@ -471,7 +489,7 @@ class Fed_trainer(object):
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize
         # optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
         if task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
             training_args = TrainingArguments(output_dir='./save/model', save_steps=save_steps,
                                             #   save_strategy='epoch',

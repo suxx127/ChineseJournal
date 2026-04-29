@@ -66,7 +66,7 @@ class CustomLoRALinear(nn.Linear):
 
 # ------------------- 安全替换PEFT LoRA层 -------------------
 # proportion: 置零比例（0-1），表示训练多少比例的行/列
-def safe_replace_lora_layers(peft_model, proportion):
+def safe_replace_lora_layers(peft_model, proportion, args):
     if proportion == 1:
         return peft_model  # 不需要替换，直接返回原模型
     with torch.no_grad():
@@ -86,7 +86,7 @@ def safe_replace_lora_layers(peft_model, proportion):
                 lora_A_weight = module.lora_A['default'].weight
                 row_num = lora_A_weight.shape[0]
                 col_num = lora_A_weight.shape[1]
-                proportion_row = int(math.sqrt(proportion)*row_num) / row_num
+                proportion_row = max(int(math.sqrt(proportion)*row_num) / row_num, 4 / args.lora_rank)  # 确保至少训练4行
                 proportion_col = proportion / proportion_row
                 frozen_row_index = list(range(math.ceil(row_num * proportion_row), row_num))
                 frozen_col_index = list(range(math.ceil(col_num * proportion_col), col_num))
@@ -114,7 +114,7 @@ def safe_replace_lora_layers(peft_model, proportion):
                 lora_B_weight = module.lora_B['default'].weight
                 col_num = lora_B_weight.shape[1]
                 row_num = lora_B_weight.shape[0]
-                proportion_col = int(math.sqrt(proportion)*col_num) / col_num
+                proportion_col = max(int(math.sqrt(proportion)*col_num) / col_num, 4 / args.lora_rank)  # 确保至少训练4列
                 proportion_row = proportion / proportion_col
                 frozen_column_index = list(range(math.ceil(col_num * proportion_col), col_num))
                 frozen_row_index = list(range(math.ceil(row_num * proportion_row), row_num))
@@ -299,26 +299,26 @@ def get_model_lora(model: str, lora_alpha: int, lora_rank: int, num_labels: list
 
 def get_automodel(model_path: str, num_labels: list, task: Task):
     if task == Task.SequenceClassification:
-        model_pre = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=num_labels[0], torch_dtype="auto")
+        model_pre = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=num_labels[0], torch_dtype=torch.bfloat16)
         task_type = TaskType.CAUSAL_LM
     elif task == Task.CausalLM:
         # model_pre = AutoModelForSeq2SeqLM.from_pretrained(model_path, is_decoder=True)
-        model_pre = AutoModelForCausalLM.from_pretrained(model_path, is_decoder=True, torch_dtype="auto")
+        model_pre = AutoModelForCausalLM.from_pretrained(model_path, is_decoder=True, torch_dtype=torch.bfloat16)
         task_type = TaskType.CAUSAL_LM
     elif task == Task.TokenClassification:
         if 'llama' in model_path:
             exit("Llama do not support task TokenClassification")
         model_pre = AutoModelForTokenClassification.from_pretrained(model_path, id2label=num_labels[0],
-                                                                    label2id=num_labels[1], torch_dtype="auto")
+                                                                    label2id=num_labels[1], torch_dtype=torch.bfloat16)
         task_type = TaskType.CAUSAL_LM
     else:
         if 'llama' in model_path:
-            model_pre = AutoModel.from_pretrained(model_path, torch_dtype="auto")
+            model_pre = AutoModel.from_pretrained(model_path, torch_dtype=torch.bfloat16)
             model_pre.save_pretrained("./model/base_model")
-            model_pre = AutoModelForQuestionAnswering.from_pretrained("./model/base_model", torch_dtype="auto")
+            model_pre = AutoModelForQuestionAnswering.from_pretrained("./model/base_model", torch_dtype=torch.bfloat16)
             # model_pre = AutoModelForQuestionAnswering.from_pretrained(model_path)
         else:
-            model_pre = AutoModelForQuestionAnswering.from_pretrained(model_path, torch_dtype="auto")
+            model_pre = AutoModelForQuestionAnswering.from_pretrained(model_path, torch_dtype=torch.bfloat16)
         task_type = TaskType.QUESTION_ANS
     return model_pre, task_type
 

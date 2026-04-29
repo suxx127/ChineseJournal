@@ -27,7 +27,7 @@ def args_parser():
     parser.add_argument('--centralized', action='store_true', help='using centralized learning')
     parser.add_argument('--sample_fraction', type=float, default=0.1,
                         help='how many clients are sampled in each round')
-    parser.add_argument('--num_client', type=int, default=50, help='number of workers in a distributed cluster')
+    parser.add_argument('--num_client', type=int, default=100, help='number of workers in a distributed cluster')
     parser.add_argument('--comm_round', type=int, default=150, help='number of maximum communication round')
 
     # Training configuration
@@ -45,8 +45,8 @@ def args_parser():
     parser.add_argument('--max_length', type=int, default=256, help='max_length for data')
 
     # LoRa configuration
-    parser.add_argument('--lora_alpha', type=int, default=32, help='scaling factors for LoRa')
-    parser.add_argument('--lora_rank', type=int, default=16, help='rank of matrices in LoRa')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='scaling factors for LoRa')
+    parser.add_argument('--lora_rank', type=int, default=8, help='rank of matrices in LoRa')
 
     # Compress configuration
     parser.add_argument('--packet_num', type=int, default=360, help='number of packet in each communication round')

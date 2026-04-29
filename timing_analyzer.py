@@ -15,7 +15,7 @@ from torch.utils.data import Subset, DataLoader
 from torch import nn
 
 # 设置使用GPU 3
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 from model_utils import get_model_tokenizer, get_model_lora
 from dataset_utils import get_fed_data_info, Metrics_trainer
@@ -560,8 +560,8 @@ def parse_args():
     parser.add_argument('--model', type=str, default='distilbert-base-multilingual-cased',
                        choices=['distilbert-base-multilingual-cased', 'roberta-base', 'roberta-large', 'llama-2-7B'],
                        help='模型名称')
-    parser.add_argument('--lora_alpha', type=int, default=32, help='LoRA alpha参数')
-    parser.add_argument('--lora_rank', type=int, default=16, help='LoRA rank')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha参数')
+    parser.add_argument('--lora_rank', type=int, default=8, help='LoRA rank')
     parser.add_argument('--method', type=str, default='raw', help='方法名称')
     
     # 数据集参数

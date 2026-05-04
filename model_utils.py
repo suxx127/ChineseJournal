@@ -86,7 +86,7 @@ def safe_replace_lora_layers(peft_model, proportion, args):
                 lora_A_weight = module.lora_A['default'].weight
                 row_num = lora_A_weight.shape[0]
                 col_num = lora_A_weight.shape[1]
-                proportion_row = max(int(math.sqrt(proportion)*row_num) / row_num, 4 / args.lora_rank)  # 确保至少训练4行
+                proportion_row = max(int(math.sqrt(proportion)*row_num) / row_num, 2 / args.lora_rank)  
                 proportion_col = proportion / proportion_row
                 frozen_row_index = list(range(math.ceil(row_num * proportion_row), row_num))
                 frozen_col_index = list(range(math.ceil(col_num * proportion_col), col_num))
@@ -114,7 +114,7 @@ def safe_replace_lora_layers(peft_model, proportion, args):
                 lora_B_weight = module.lora_B['default'].weight
                 col_num = lora_B_weight.shape[1]
                 row_num = lora_B_weight.shape[0]
-                proportion_col = max(int(math.sqrt(proportion)*col_num) / col_num, 4 / args.lora_rank)  # 确保至少训练4列
+                proportion_col = max(int(math.sqrt(proportion)*col_num) / col_num, 2 / args.lora_rank)  
                 proportion_row = proportion / proportion_col
                 frozen_column_index = list(range(math.ceil(col_num * proportion_col), col_num))
                 frozen_row_index = list(range(math.ceil(row_num * proportion_row), row_num))
@@ -285,10 +285,10 @@ def get_model_lora(model: str, lora_alpha: int, lora_rank: int, num_labels: list
         target_modules=target_modules,
         task_type=task_type,
         lora_alpha=lora_alpha,
-        lora_dropout=0.05,
+        # lora_dropout=0.05,
         # init_lora_weights=False
         # use_rslora=True,
-        # bias='lora_only'
+        bias='lora_only'
     )
     peft_model = get_peft_model(model_pre, peft_config)
     trainable_parameters, _ = peft_model.get_nb_trainable_parameters()

@@ -41,8 +41,8 @@ def QSGD_quan(parameters, centroids):
     l = (rang * centroids).int()
     p = 1 - (rang * centroids - l)
     p[p < 1e-5] = 0
-    seed = torch.rand(parameters.shape)
-    xi = torch.zeros_like(parameters)
+    seed = torch.rand(parameters.shape).cuda()
+    xi = torch.zeros_like(parameters).cuda()
     xi[seed < p] = l[seed < p] / centroids
     xi[seed >= p] = (l + 1)[seed >= p] / centroids
     ans = norm * torch.sign(parameters) * xi

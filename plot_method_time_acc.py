@@ -16,17 +16,17 @@ MANUAL_INPUTS = [
     # "result/roberta_20news_iid_pq.out",
     # "result/roberta_20news_iid_topk.out",
 
-    "result/roberta_20news_niid_raw.out",
-    "result/roberta_20news_niid_helora.out",
-    "result/roberta_20news_niid_ffthm.out",
-    "result/roberta_20news_niid_pq.out",
-    "result/roberta_20news_niid_topk.out",
+    # "result/roberta_20news_niid_raw.out",
+    # "result/roberta_20news_niid_helora.out",
+    # "result/roberta_20news_niid_ffthm.out",
+    # "result/roberta_20news_niid_pq.out",
+    # "result/roberta_20news_niid_topk.out",
 
-    # "result/roberta_squad_niid_raw.out",
-    # "result/roberta_squad_niid_helora.out",
-    # "result/roberta_squad_niid_ffthm.out",
-    # "result/roberta_squad_niid_pq.out",
-    # "result/roberta_squad_niid_topk.out",
+    "result/roberta_squad_iid_raw.out",
+    "result/roberta_squad_iid_helora.out",
+    "result/roberta_squad_iid_ffthm.out",
+    "result/roberta_squad_iid_pq.out",
+    "result/roberta_squad_iid_topk.out",
 ]
 
 METHOD_MARKERS = {

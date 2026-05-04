@@ -80,7 +80,7 @@ class Fed_trainer(object):
             grad = torch.empty(0)
             param = torch.empty(0)
 
-        print("the proportion of zeros in gradients is ", torch.sum(grad < 1e-5) / grad.numel())
+        print("the proportion of zeros in gradients is ", torch.sum(grad == 0) / grad.numel())
         return grad, param, name_grad, name_param, name_paramlast
 
     def paramAggre(self, grad, gobal_model=None):
@@ -191,31 +191,45 @@ class Fed_trainer(object):
 
     def aggregate(self, grad_dist: dict, cohorts: list, partition_map: dict):
         model_gra = torch.zeros_like(grad_dist[cohorts[0]])
-        if self.args.method != 'FFTHM':
-            weights = {}
-            data_sum = 0
-            for client in cohorts:
-                data_size = len(partition_map[client])
-                if self.args.method == 'HeLoRA' and client in self.client_ranks:
-                    weights[client] = data_size * self.client_ranks[client]
-                else:
-                    weights[client] = data_size
-                data_sum += weights[client]
+        
+        weights = {}
+        data_sum = 0
+        for client in cohorts:
+            data_size = len(partition_map[client])
+            if self.args.method == 'HeLoRA' and client in self.client_ranks:
+                weights[client] = data_size * self.client_ranks[client]
+            else:
+                weights[client] = data_size
+            data_sum += weights[client]
 
-            for client in cohorts:
-                w = weights[client] / data_sum
-                model_gra += (w * grad_dist[client])
-        else:
-            weights = {}
-            data_sum = torch.zeros_like(grad_dist[cohorts[0]])
-            for client in cohorts:
-                data_size = len(partition_map[client])
-                weights[client] = torch.where(grad_dist[client] != 0, torch.tensor(data_size), torch.tensor(1.0)).cuda()
-                data_sum += weights[client]
-            # data_sum = torch.where(data_sum == 0, torch.tensor(1.0).cuda(), data_sum)
-            for client in cohorts:
-                w = weights[client] / data_sum
-                model_gra += (w * grad_dist[client])
+        for client in cohorts:
+            w = weights[client] / data_sum
+            model_gra += (w * grad_dist[client])
+        # if self.args.method != 'FFTHM':
+        #     weights = {}
+        #     data_sum = 0
+        #     for client in cohorts:
+        #         data_size = len(partition_map[client])
+        #         if self.args.method == 'HeLoRA' and client in self.client_ranks:
+        #             weights[client] = data_size * self.client_ranks[client]
+        #         else:
+        #             weights[client] = data_size
+        #         data_sum += weights[client]
+
+        #     for client in cohorts:
+        #         w = weights[client] / data_sum
+        #         model_gra += (w * grad_dist[client])
+        # else:
+        #     weights = {}
+        #     data_sum = torch.zeros_like(grad_dist[cohorts[0]])
+        #     for client in cohorts:
+        #         data_size = len(partition_map[client])
+        #         weights[client] = torch.where(grad_dist[client] >= 1e-6, torch.tensor(data_size), torch.tensor(1.0)).cuda()
+        #         data_sum += weights[client]
+        #     # data_sum = torch.where(data_sum == 0, torch.tensor(1.0).cuda(), data_sum)
+        #     for client in cohorts:
+        #         w = weights[client] / data_sum
+        #         model_gra += (w * grad_dist[client])
 
         
         return model_gra
@@ -317,15 +331,19 @@ class Fed_trainer(object):
                     client_times[client] = total_time
                 
                 # 找出资源最丰富的客户端（总时间最短）
+                if self.args.dataset == '20_newsgroups':
+                    fft_thres = max(2.5 - 0.05 * rnd, 0.5)  # 随轮次增加阈值，允许客户端参与训练的比例增加
+                else:
+                    fft_thres = max(2.5 - 0.05 * rnd, 0.5)
                 richest_client = min(client_times, key=client_times.get)
                 T_max = client_times[richest_client]
                 for client in cohorts:
-                    if client_times[client] <= client_times[richest_client] * 1.5:
+                    if client_times[client] <= client_times[richest_client] * fft_thres:
                         T_max = max(T_max, client_times[client])
                 
                 for client in cohorts:
                     # if client == richest_client:
-                    if client_times[client] <= client_times[richest_client] * 1.5:
+                    if client_times[client] <= client_times[richest_client] * fft_thres:
                         client_proportions[client] = 1.0
                     else:
                         forward = self.client_allocated_timings[client]['forward_time']
@@ -379,7 +397,7 @@ class Fed_trainer(object):
                 # 如果是 FFTHM 方法，按训练比例p缩放反向传播时间和上传时间
                 if self.args.method == 'FFTHM':
                     p = client_proportions[client]
-                    p_r = max(int(math.sqrt(p)*self.args.lora_rank) / self.args.lora_rank, 4 / self.args.lora_rank)  
+                    p_r = max(int(math.sqrt(p)*self.args.lora_rank) / self.args.lora_rank, 2 / self.args.lora_rank)  
                     p_f = p / p_r
                     backward_time_scaled = backward_time * p * p_f
                     upload_time_scaled = upload_time * p
@@ -488,8 +506,12 @@ class Fed_trainer(object):
         model.train()
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize
-        # optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
+        if self.args.dataset == '20_newsgroups':
+            optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
+        else:
+            optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
+            # optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
+        
         if task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
             training_args = TrainingArguments(output_dir='./save/model', save_steps=save_steps,
                                             #   save_strategy='epoch',
@@ -714,11 +736,11 @@ class Fed_trainer(object):
                     if '平均时间/批次' in line and '前向传播' in lines[i-2]:
                         # 提取前向传播平均时间 (ms)
                         forward_time_str = line.split(':')[1].strip().split(' ')[0]
-                        self.timing_stats['avg_forward_time'] = float(forward_time_str) / 1000  # 转为秒
+                        self.timing_stats['avg_forward_time'] = 2 * float(forward_time_str) / 1000  # 转为秒
                     elif '平均时间/批次' in line and '反向更新' in lines[i-2]:
                         # 提取反向更新平均时间 (ms)
                         backward_time_str = line.split(':')[1].strip().split(' ')[0]
-                        self.timing_stats['avg_backward_time'] = float(backward_time_str) / 1000  # 转为秒
+                        self.timing_stats['avg_backward_time'] = 2 * float(backward_time_str) / 1000  # 转为秒
             print(f"已从 {timing_file} 加载时间统计")
         except FileNotFoundError:
             print(f"警告: 找不到 {timing_file}，使用默认值")

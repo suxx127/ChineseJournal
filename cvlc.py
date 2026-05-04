@@ -1442,8 +1442,8 @@ def topk_rowcol(proportion, name_param):
 
 
 def pq_pure(grad, bit_len):
-    new_grad = PQ_quan(grad, 2 ** (bit_len))
-    # new_grad = QSGD_quan(grad, 2 ** (bit_len - 1))
+    # new_grad = PQ_quan(grad, 2 ** (bit_len))
+    new_grad = QSGD_quan(grad, 2 ** (bit_len - 1))
     return new_grad
 
 

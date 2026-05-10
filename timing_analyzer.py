@@ -263,8 +263,8 @@ class TimingAnalyzer:
         print("=" * 80)
 
         train_data = Subset(data["train"], data_indices)
-        # optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr)
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.args.lr)
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr)
+        # optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.args.lr)
         save_steps = sys.maxsize
 
         if self.task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
@@ -559,7 +559,7 @@ def parse_args():
     
     # 模型参数
     parser.add_argument('--model', type=str, default='distilbert-base-multilingual-cased',
-                       choices=['distilbert-base-multilingual-cased', 'roberta-base', 'roberta-large', 'llama-2-7B'],
+                       choices=['distilbert-base-multilingual-cased', 'roberta-base', 'roberta-large', 'llama-2-7B', 'llama-3.2-1B'],
                        help='模型名称')
     parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha参数')
     parser.add_argument('--lora_rank', type=int, default=8, help='LoRA rank')

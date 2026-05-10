@@ -67,7 +67,7 @@ def get_fed_data_info(args, tokenizer):
         else:
             raise KeyError("xglue does not support split by label")
     elif args.dataset == "squad":
-        tokenized_dataset, validation_dataset = get_squad_tokenizer_dataset(tokenizer=tokenizer)
+        tokenized_dataset, validation_dataset = get_squad_tokenizer_dataset(tokenizer=tokenizer, max_length=args.max_length, stride=0)
         num_labels = 0
         validation_key = 'validation'
         metric = ["exact_match", "f1"]
@@ -111,7 +111,7 @@ def get_squad_tokenizer_dataset(tokenizer, max_length=256, stride=128):
             questions,
             examples["context"],
             max_length=max_length,
-            truncation="only_second",
+            truncation="longest_first",
             stride=stride,
             return_overflowing_tokens=True,
             return_offsets_mapping=True,

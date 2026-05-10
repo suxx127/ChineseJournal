@@ -189,7 +189,7 @@ class Fed_trainer(object):
                 current_index += numel
         return gobal_model
 
-    def aggregate(self, grad_dist: dict, cohorts: list, partition_map: dict):
+    def aggregate(self, grad_dist: dict, cohorts: list, partition_map: dict, client_proportions: dict):
         model_gra = torch.zeros_like(grad_dist[cohorts[0]])
         
         weights = {}
@@ -198,6 +198,8 @@ class Fed_trainer(object):
             data_size = len(partition_map[client])
             if self.args.method == 'HeLoRA' and client in self.client_ranks:
                 weights[client] = data_size * self.client_ranks[client]
+            elif self.args.method == 'FFTHM':
+                weights[client] = data_size * client_proportions[client]
             else:
                 weights[client] = data_size
             data_sum += weights[client]
@@ -224,9 +226,9 @@ class Fed_trainer(object):
         #     data_sum = torch.zeros_like(grad_dist[cohorts[0]])
         #     for client in cohorts:
         #         data_size = len(partition_map[client])
-        #         weights[client] = torch.where(grad_dist[client] >= 1e-6, torch.tensor(data_size), torch.tensor(1.0)).cuda()
+        #         weights[client] = torch.where(grad_dist[client] == 0, torch.tensor(data_size * client_proportions[client]), torch.tensor(0.0)).cuda()
         #         data_sum += weights[client]
-        #     # data_sum = torch.where(data_sum == 0, torch.tensor(1.0).cuda(), data_sum)
+        #     data_sum = torch.where(data_sum == 0, torch.tensor(1.0).cuda(), data_sum)
         #     for client in cohorts:
         #         w = weights[client] / data_sum
         #         model_gra += (w * grad_dist[client])
@@ -331,10 +333,7 @@ class Fed_trainer(object):
                     client_times[client] = total_time
                 
                 # 找出资源最丰富的客户端（总时间最短）
-                if self.args.dataset == '20_newsgroups':
-                    fft_thres = max(2.5 - 0.05 * rnd, 0.5)  # 随轮次增加阈值，允许客户端参与训练的比例增加
-                else:
-                    fft_thres = max(2.5 - 0.05 * rnd, 0.5)
+                fft_thres = max(2.5 - 0.05 * rnd, 0.5)  # 随轮次增加阈值，允许客户端参与训练的比例增加
                 richest_client = min(client_times, key=client_times.get)
                 T_max = client_times[richest_client]
                 for client in cohorts:
@@ -368,7 +367,7 @@ class Fed_trainer(object):
                 local_model = self.train(data=data, data_indices=partition_map[client],
                                         model=local_model,
                                         tokenizer=tokenizer, task=task, client_idx=i,
-                                        update_proportion=client_proportions[client], client_id=client)
+                                        update_proportion=client_proportions[client], client_id=client, rnd=rnd)
                 # if rnd == 0 and client == cohorts[0]:
                 #     self.copy_model_expect_lora(local_model)
                 
@@ -431,7 +430,7 @@ class Fed_trainer(object):
                       f'反向耗时: {backward_time:.4f}s, '
                       f'通信耗时: {communication_time:.4f}s, '
                       f'(上传速率: {upload_speed:.2f}Mbps, 下载速率: {download_speed:.2f}Mbps)')
-            grad = self.aggregate(grad_dist=grad_dist, cohorts=cohorts, partition_map=partition_map)
+            grad = self.aggregate(grad_dist=grad_dist, cohorts=cohorts, partition_map=partition_map, client_proportions=client_proportions)
             
             # 计算该轮的最大耗时（联邦学习中的瓶颈）
             if round_client_timings:
@@ -492,10 +491,10 @@ class Fed_trainer(object):
         
         return
 
-    def train(self, data, data_indices, model, tokenizer, task, client_idx, update_proportion, client_id=None):
+    def train(self, data, data_indices, model, tokenizer, task, client_idx, update_proportion, client_id=None, rnd=None):
         # 用于对低秩矩阵进行冻结
         if self.args.method == 'FFTHM':
-            model = safe_replace_lora_layers(model, update_proportion, self.args)
+            model = safe_replace_lora_layers(model, update_proportion, self.args, rnd)
         
         # 如果是 HeLoRA 方法，执行秩截断
         if self.args.method == 'HeLoRA' and client_id is not None:
@@ -506,12 +505,8 @@ class Fed_trainer(object):
         model.train()
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize
-        if self.args.dataset == '20_newsgroups':
-            optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
-        else:
-            optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-            # optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
-        
+        # optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
         if task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
             training_args = TrainingArguments(output_dir='./save/model', save_steps=save_steps,
                                             #   save_strategy='epoch',
@@ -881,6 +876,7 @@ class Fed_trainer(object):
                     # 用平均值填充后续列
                     for col_idx in range(target_rank, current_param.shape[1]):
                         model_state[name][:, col_idx] = col_mean.squeeze()
+                        # model_state[name][:, col_idx] = 0
             elif 'lora_A' in name:
                 # A 矩阵: (rank, out_features) -> 使用前 target_rank 行的平均值填充后续行
                 current_param = model_state[name]
@@ -890,6 +886,7 @@ class Fed_trainer(object):
                     # 用平均值填充后续行
                     for row_idx in range(target_rank, current_param.shape[0]):
                         model_state[name][row_idx, :] = row_mean.squeeze()
+                        # model_state[name][row_idx, :] = 0
         
         model.load_state_dict(model_state)
         return model

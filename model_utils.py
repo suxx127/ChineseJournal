@@ -66,7 +66,7 @@ class CustomLoRALinear(nn.Linear):
 
 # ------------------- 安全替换PEFT LoRA层 -------------------
 # proportion: 置零比例（0-1），表示训练多少比例的行/列
-def safe_replace_lora_layers(peft_model, proportion, args):
+def safe_replace_lora_layers(peft_model, proportion, args, rnd):
     if proportion == 1:
         return peft_model  # 不需要替换，直接返回原模型
     with torch.no_grad():
@@ -88,6 +88,13 @@ def safe_replace_lora_layers(peft_model, proportion, args):
                 col_num = lora_A_weight.shape[1]
                 proportion_row = max(int(math.sqrt(proportion)*row_num) / row_num, 2 / args.lora_rank)  
                 proportion_col = proportion / proportion_row
+                # 第 rnd 轮训练不同的行/列块
+                
+                # train_row = math.ceil(row_num * proportion_row)
+                # start = (rnd * train_row) % row_num
+                # train_rows = [(start + i) % row_num for i in range(train_row)]
+                # frozen_row_index = [i for i in range(row_num) if i not in train_rows]
+
                 frozen_row_index = list(range(math.ceil(row_num * proportion_row), row_num))
                 frozen_col_index = list(range(math.ceil(col_num * proportion_col), col_num))
                 # lora_B_weight.data[frozen_row_index, :] = 0
@@ -116,6 +123,12 @@ def safe_replace_lora_layers(peft_model, proportion, args):
                 row_num = lora_B_weight.shape[0]
                 proportion_col = max(int(math.sqrt(proportion)*col_num) / col_num, 2 / args.lora_rank)  
                 proportion_row = proportion / proportion_col
+
+                # train_col = math.ceil(col_num * proportion_col)
+                # start = (rnd * train_col) % col_num
+                # train_cols = [(start + i) % col_num for i in range(train_col)]
+                # frozen_column_index = [i for i in range(col_num) if i not in train_cols]
+
                 frozen_column_index = list(range(math.ceil(col_num * proportion_col), col_num))
                 frozen_row_index = list(range(math.ceil(row_num * proportion_row), row_num))
                 # lora_A_weight.data[:, frozen_column_index] = 0

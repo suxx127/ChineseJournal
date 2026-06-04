@@ -263,7 +263,7 @@ class TimingAnalyzer:
         print("=" * 80)
 
         train_data = Subset(data["train"], data_indices)
-        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr)
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr, momentum=0.9)
         # optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.args.lr)
         save_steps = sys.maxsize
 

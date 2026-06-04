@@ -20,7 +20,7 @@ def args_parser():
 
     parser.add_argument('--partition', action='store_true', help='iid:True, non-iid:False')
     parser.add_argument('--label', action='store_true', help='using label to partition')
-    parser.add_argument('--alpha', type=float, default=1.0,
+    parser.add_argument('--alpha', type=float, default=5.0,
                         help='Alpha for the dirichlet distribution for data partitioning')
 
     # Federated Learning configuration

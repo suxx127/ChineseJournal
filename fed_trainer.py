@@ -199,7 +199,8 @@ class Fed_trainer(object):
             if self.args.method == 'HeLoRA' and client in self.client_ranks:
                 weights[client] = data_size * self.client_ranks[client]
             elif self.args.method == 'FFTHM':
-                weights[client] = data_size * client_proportions[client]
+                weights[client] = data_size * client_proportions[client] ** 2
+                # weights[client] = data_size
             else:
                 weights[client] = data_size
             data_sum += weights[client]
@@ -310,6 +311,26 @@ class Fed_trainer(object):
             np.random.seed(self.random_list[rnd])
             cohorts = np.random.choice(self.args.num_client, int(self.args.num_client * self.args.sample_fraction),
                                     replace=False).tolist()
+            # if self.args.method == 'FFTHM':
+            #     sample_size = max(1, int(self.args.num_client * self.args.sample_fraction))
+            #     all_clients = list(range(self.args.num_client))
+            #     seed_client = np.random.choice(all_clients)
+            #     # 先随机选一个客户端，然后选择与其训练时间相近的客户端
+            #     seed_alloc = self.client_allocated_timings[seed_client]
+            #     seed_upload_bytes = seed_alloc['upload_speed'] * 1024 * 1024 / 8
+            #     seed_download_bytes = seed_alloc['download_speed'] * 1024 * 1024 / 8
+            #     seed_total_time = (seed_alloc['forward_time'] + seed_alloc['backward_time'] +
+            #                     lora_params_size / seed_upload_bytes + lora_params_size / seed_download_bytes)
+            #     client_diffs = []
+            #     for client in all_clients:
+            #         alloc = self.client_allocated_timings[client]
+            #         upload_bytes = alloc['upload_speed'] * 1024 * 1024 / 8
+            #         download_bytes = alloc['download_speed'] * 1024 * 1024 / 8
+            #         total_time = (alloc['forward_time'] + alloc['backward_time'] +
+            #                     lora_params_size / upload_bytes + lora_params_size / download_bytes)
+            #         client_diffs.append((abs(total_time - seed_total_time), client))
+            #     client_diffs.sort(key=lambda x: x[0])
+            #     cohorts = [client for _, client in client_diffs[:sample_size]]
             
             # 如果是 FFTHM 方法，计算每个客户端的训练比例p以平衡时间
             # 计算每个客户端的训练比例p
@@ -332,17 +353,21 @@ class Fed_trainer(object):
                     total_time = forward + backward + upload_time + download_time
                     client_times[client] = total_time
                 
-                # 找出资源最丰富的客户端（总时间最短）
-                fft_thres = max(2.5 - 0.05 * rnd, 0.5)  # 随轮次增加阈值，允许客户端参与训练的比例增加
-                richest_client = min(client_times, key=client_times.get)
-                T_max = client_times[richest_client]
+                # 找出速度中等的客户端作为参考指标（而不是最快的）
+                sorted_clients = sorted(client_times.items(), key=lambda x: x[1])
+                median_idx = len(sorted_clients) // 2
+                median_client = sorted_clients[median_idx][0]
+                T_max = client_times[median_client]
+                
+                # fft_thres = max(1.5 + 0.05 * rnd, 0.5)  # 随轮次增加阈值，允许客户端参与训练的比例增加
+                fft_thres = 1  # 随轮次增加阈值，允许客户端参与训练的比例增加
                 for client in cohorts:
-                    if client_times[client] <= client_times[richest_client] * fft_thres:
+                    if client_times[client] <= T_max * fft_thres:
                         T_max = max(T_max, client_times[client])
                 
                 for client in cohorts:
-                    # if client == richest_client:
-                    if client_times[client] <= client_times[richest_client] * fft_thres:
+                    # if client == median_client:
+                    if client_times[client] <= T_max * fft_thres:
                         client_proportions[client] = 1.0
                     else:
                         forward = self.client_allocated_timings[client]['forward_time']
@@ -352,14 +377,28 @@ class Fed_trainer(object):
                         denominator = backward + upload_time
                         if denominator > 0:
                             p = (T_max - forward - download_time) / denominator
-                            p = max(0.1, min(1.0, p))  # 限制在0.1到1.0之间
+                            # p = max(0.3, min(1.0, p))  # 限制在0.3到1.0之间
                         else:
                             p = 1.0
                         client_proportions[client] = p
+                # if not self.args.label and rnd >= self.args.comm_round / 4:
+                #     self.args.method = 'raw'
             else:
                 for client in cohorts:
                     client_proportions[client] = 1.0
             
+            # 处理负数：如果client_proportions中有负数，将其设置为最小非负值
+            non_negative_values = [v for v in client_proportions.values() if v >= 0]
+            if len(non_negative_values) > 0:
+                min_non_negative = min(non_negative_values)
+            else:
+                min_non_negative = 1.0  # 如果全是负数，默认设置为1.0
+            
+            for client in client_proportions:
+                if client_proportions[client] < 0:
+                    client_proportions[client] = min_non_negative
+            
+            print(f"Client proportions for round {rnd}: {client_proportions}")
             grad_dist = {}
             for i, client in enumerate(cohorts):
                 self.accelerator.print(f'CLIENT:{client}')
@@ -505,8 +544,10 @@ class Fed_trainer(object):
         model.train()
         train_data = Subset(data["train"], data_indices)
         save_steps = sys.maxsize
-        # optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
+        if self.args.dataset == 'squad':
+            optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
+        else:
+            optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.lr)
         if task in [Task.SequenceClassification, Task.TokenClassification, Task.QuestionAnswering, Task.CausalLM]:
             training_args = TrainingArguments(output_dir='./save/model', save_steps=save_steps,
                                             #   save_strategy='epoch',

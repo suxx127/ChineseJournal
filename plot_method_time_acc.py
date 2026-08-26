@@ -34,11 +34,11 @@ MANUAL_INPUTS = [
     # "result/distilbert_20news_niid_pq.out",
     # "result/distilbert_20news_niid_topk.out",
 
-    "result/llama_20news_iid_raw.out",
-    "result/llama_20news_iid_helora.out",
-    "result/llama_20news_iid_ffthm.out",
-    "result/llama_20news_iid_pq.out",
-    "result/llama_20news_iid_topk.out",
+    # "result/llama_20news_iid_raw.out",
+    # "result/llama_20news_iid_helora.out",
+    # "result/llama_20news_iid_ffthm.out",
+    # "result/llama_20news_iid_pq.out",
+    # "result/llama_20news_iid_topk.out",
 
     # "result/llama_20news_niid_raw.out",
     # "result/llama_20news_niid_helora.out",
@@ -76,11 +76,11 @@ MANUAL_INPUTS = [
     # "result/llama_squad_iid_pq.out",
     # "result/llama_squad_iid_topk.out",
 
-    # "result/llama_squad_niid_raw.out",
-    # "result/llama_squad_niid_helora.out",
-    # "result/llama_squad_niid_ffthm.out",
-    # "result/llama_squad_niid_pq.out",
-    # "result/llama_squad_niid_topk.out",
+    "result/llama_squad_niid_raw.out",
+    "result/llama_squad_niid_helora.out",
+    "result/llama_squad_niid_ffthm.out",
+    "result/llama_squad_niid_pq.out",
+    "result/llama_squad_niid_topk.out",
 ]
 
 METHOD_MARKERS = {
